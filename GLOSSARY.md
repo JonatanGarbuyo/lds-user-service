@@ -26,3 +26,6 @@ Estado impuesto administrativamente que impide la autenticación de un User y te
 
 **Account Deletion**:
 Terminación solicitada de una identidad de usuario, que revoca el acceso sin implicar necesariamente la eliminación inmediata de datos sujetos a obligaciones de conservación.
+
+**Reader State**:
+Representación temporal del estado de registro y los derechos de acceso de un lector, utilizada para personalizar la experiencia del sitio. No constituye por sí misma una credencial que autorice operaciones protegidas.
