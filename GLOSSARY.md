@@ -17,3 +17,12 @@ _Avoid_: User con rol de admin.
 
 **Email Verification**:
 Comprobación de que una persona controla la dirección de email asociada a su identidad. Es independiente de haber iniciado sesión.
+
+**Pending Email Change**:
+Solicitud de sustitución de la dirección de email de un User; la dirección actual se mantiene hasta que se confirme el control de la nueva.
+
+**Suspension**:
+Estado impuesto administrativamente que impide la autenticación de un User y termina el acceso de sus sesiones activas.
+
+**Account Deletion**:
+Terminación solicitada de una identidad de usuario, que revoca el acceso sin implicar necesariamente la eliminación inmediata de datos sujetos a obligaciones de conservación.
