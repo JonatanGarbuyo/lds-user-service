@@ -29,3 +29,24 @@ Terminación solicitada de una identidad de usuario, que revoca el acceso sin im
 
 **Reader State**:
 Representación temporal del estado de registro y los derechos de acceso de un lector, utilizada para personalizar la experiencia del sitio. No constituye por sí misma una credencial que autorice operaciones protegidas.
+
+**Registered**:
+Condición de una identidad User que tiene una cuenta creada. No implica suscripción comercial ni un derecho premium.
+
+**Subscription**:
+Relación comercial con un período de facturación y una política de renovación. Puede dar origen a concesiones de acceso, pero no equivale a un permiso efectivo.
+
+**Subscriber**:
+User que mantiene una relación comercial de suscripción; no debe usarse como sinónimo de User ni de titular de un Entitlement.
+
+**Entitlement**:
+Derecho efectivo de una identidad a una capacidad identificada de forma estable, independientemente del proveedor de pago o del plan comercial.
+
+**Entitlement Grant**:
+Concesión individual de una capacidad a un User, con origen, vigencia y trazabilidad propios. Varias concesiones vigentes pueden sustentar el mismo derecho.
+
+**Billing**:
+Módulo opcional responsable de modelar la relación comercial y normalizar eventos verificados de distintos proveedores de pago, desacoplado de la autorización efectiva.
+
+**Comments**:
+Módulo opcional responsable de publicación, moderación y políticas de conservación del contenido aportado por usuarios.
