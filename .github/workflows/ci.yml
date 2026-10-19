@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Build, vet, format, test and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$unformatted" ]; then
+            echo "Unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.15.0
+          args: --timeout=5m
+
+  migrations:
+    name: Migrations against PostgreSQL
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: lds_user_service
+          POSTGRES_USER: lds
+          POSTGRES_PASSWORD: lds_dev_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lds -d lds_user_service"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://lds:lds_dev_password@localhost:5432/lds_user_service?sslmode=disable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
+
+      - name: Show migration version
+        run: go run ./cmd/migrate version
+
+      - name: Roll back baseline migration
+        run: go run ./cmd/migrate down 1
+
+      - name: Show version after rollback
+        run: go run ./cmd/migrate version
+
+  compose-smoke:
+    name: Docker Compose smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Validate Compose file
+        run: docker compose config --quiet
+
+      - name: Start stack
+        run: docker compose up -d --build
+
+      - name: Wait for readiness
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080/readyz >/dev/null; then
+              echo "Service is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Service did not become ready"
+          docker compose logs app postgres
+          exit 1
+
+      - name: Apply and inspect migrations
+        run: |
+          docker compose --profile tools run --rm migrate up
+          docker compose --profile tools run --rm migrate version
+
+      - name: Wait for container health
+        run: |
+          for attempt in $(seq 1 30); do
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$$(docker compose ps -q app)")"
+            if [ "$status" = "healthy" ]; then
+              echo "Container is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Container did not become healthy"
+          docker compose logs app
+          exit 1
+
+      - name: Stop stack and remove volumes
+        if: always()
+        run: docker compose down -v --remove-orphans

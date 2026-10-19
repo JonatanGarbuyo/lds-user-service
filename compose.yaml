@@ -1,0 +1,58 @@
+name: lds-user-service
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lds_user_service}
+      POSTGRES_USER: ${POSTGRES_USER:-lds}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lds_dev_password}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  app:
+    build:
+      context: .
+    init: true
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://${POSTGRES_USER:-lds}:${POSTGRES_PASSWORD:-lds_dev_password}@postgres:5432/${POSTGRES_DB:-lds_user_service}?sslmode=disable
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
+      DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-5s}
+      DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+    ports:
+      - "127.0.0.1:${HTTP_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  migrate:
+    profiles: ["tools"]
+    build:
+      context: .
+    entrypoint: ["/app/migrate"]
+    command: ["version"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-lds}:${POSTGRES_PASSWORD:-lds_dev_password}@postgres:5432/${POSTGRES_DB:-lds_user_service}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
