@@ -160,7 +160,7 @@ make fmt-check
 make lint
 ```
 
-Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP y el hasher Argon2id. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, duplicados, concurrencia, reinicio con un pool nuevo y ausencia de credenciales.
+Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP y el hasher Argon2id. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, inputs inválidos, duplicados, concurrencia, reinicio del servicio y ausencia de credenciales.
 
 `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
 

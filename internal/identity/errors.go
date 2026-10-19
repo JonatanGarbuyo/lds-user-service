@@ -2,10 +2,7 @@ package identity
 
 import "errors"
 
-var (
-	ErrEmailAlreadyExists = errors.New("email already exists")
-	ErrUserNotFound       = errors.New("user not found")
-)
+var ErrEmailAlreadyExists = errors.New("email already exists")
 
 type ValidationError struct {
 	Fields map[string]string

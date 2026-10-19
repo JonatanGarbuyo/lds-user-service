@@ -58,17 +58,6 @@ func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (
 	return user, nil
 }
 
-func (r *memoryRepository) FindByEmail(_ context.Context, email string) (identity.User, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	user, ok := r.users[email]
-	if !ok {
-		return identity.User{}, identity.ErrUserNotFound
-	}
-	return user, nil
-}
-
 type prefixHasher struct{}
 
 func (prefixHasher) Hash(password string) (string, error) {

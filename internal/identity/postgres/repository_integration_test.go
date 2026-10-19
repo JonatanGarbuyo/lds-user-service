@@ -8,59 +8,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
 	identitypostgres "github.com/JonatanGarbuyo/lds-user-service/internal/identity/postgres"
-	platformpostgres "github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
-	"github.com/JonatanGarbuyo/lds-user-service/migrations"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/testpg"
 )
-
-var (
-	migrateOnce sync.Once
-	migrateErr  error
-)
-
-func openTestDatabase(t *testing.T) *platformpostgres.DB {
-	t.Helper()
-
-	databaseURL := os.Getenv("TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	db, err := platformpostgres.Open(ctx, databaseURL, 4)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(db.Close)
-
-	migrateOnce.Do(func() {
-		migrator, err := migrations.Open(databaseURL)
-		if err != nil {
-			migrateErr = err
-			return
-		}
-		defer func() { _, _ = migrator.Close() }()
-
-		if err := migrator.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-			migrateErr = err
-		}
-	})
-	if migrateErr != nil {
-		t.Fatalf("apply migrations: %v", migrateErr)
-	}
-
-	return db
-}
 
 func uniqueEmail(t *testing.T) string {
 	t.Helper()
@@ -72,8 +27,8 @@ func uniqueEmail(t *testing.T) string {
 	return fmt.Sprintf("repo-%s@example.com", hex.EncodeToString(suffix[:]))
 }
 
-func TestRepositoryCreatesAndFindsUser(t *testing.T) {
-	db := openTestDatabase(t)
+func TestRepositoryCreatePersistsUser(t *testing.T) {
+	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	email := uniqueEmail(t)
 
@@ -103,30 +58,38 @@ func TestRepositoryCreatesAndFindsUser(t *testing.T) {
 		t.Error("timestamps are zero")
 	}
 
-	found, err := repository.FindByEmail(context.Background(), email)
+	var (
+		storedEmail     string
+		storedHash      string
+		storedVerified  bool
+		storedStatus    string
+		storedCreatedAt time.Time
+		storedUpdatedAt time.Time
+	)
+	err = db.Pool.QueryRow(
+		context.Background(),
+		`SELECT email, password_hash, email_verified, status, created_at, updated_at FROM users WHERE id = $1`,
+		created.ID,
+	).Scan(&storedEmail, &storedHash, &storedVerified, &storedStatus, &storedCreatedAt, &storedUpdatedAt)
 	if err != nil {
-		t.Fatalf("FindByEmail() error = %v", err)
+		t.Fatalf("query stored user: %v", err)
 	}
-	if found.ID != created.ID || found.Email != created.Email || found.Status != created.Status {
-		t.Errorf("found = %+v, want the created user %+v", found, created)
+	if storedEmail != created.Email || storedHash != "$argon2id$test-hash" {
+		t.Errorf("stored email/hash = %q/%q, want %q/%q", storedEmail, storedHash, created.Email, "$argon2id$test-hash")
 	}
-	if !found.CreatedAt.Equal(created.CreatedAt) {
-		t.Errorf("found.CreatedAt = %v, want %v", found.CreatedAt, created.CreatedAt)
+	if storedVerified {
+		t.Error("stored email_verified = true, want false")
 	}
-}
-
-func TestRepositoryReturnsNotFoundForUnknownEmail(t *testing.T) {
-	db := openTestDatabase(t)
-	repository := identitypostgres.NewRepository(db.Pool)
-
-	_, err := repository.FindByEmail(context.Background(), uniqueEmail(t))
-	if !errors.Is(err, identity.ErrUserNotFound) {
-		t.Fatalf("FindByEmail() error = %v, want ErrUserNotFound", err)
+	if storedStatus != string(identity.StatusActive) {
+		t.Errorf("stored status = %q, want %q", storedStatus, identity.StatusActive)
+	}
+	if !storedCreatedAt.Equal(created.CreatedAt) || !storedUpdatedAt.Equal(created.UpdatedAt) {
+		t.Errorf("stored timestamps = %v/%v, want %v/%v", storedCreatedAt, storedUpdatedAt, created.CreatedAt, created.UpdatedAt)
 	}
 }
 
 func TestRepositoryRejectsDuplicateEmail(t *testing.T) {
-	db := openTestDatabase(t)
+	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	email := uniqueEmail(t)
 
@@ -141,7 +104,7 @@ func TestRepositoryRejectsDuplicateEmail(t *testing.T) {
 }
 
 func TestRepositoryRejectsConcurrentDuplicateCreates(t *testing.T) {
-	db := openTestDatabase(t)
+	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	email := uniqueEmail(t)
 
@@ -179,23 +142,20 @@ func TestRepositoryRejectsConcurrentDuplicateCreates(t *testing.T) {
 }
 
 func TestRepositoryPersistsAcrossPoolReopen(t *testing.T) {
-	db := openTestDatabase(t)
+	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	email := uniqueEmail(t)
 
-	created, err := repository.Create(context.Background(), identity.NewUser{Email: email, PasswordHash: "hash"})
+	_, err := repository.Create(context.Background(), identity.NewUser{Email: email, PasswordHash: "hash"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 
 	db.Close()
 
-	reopened := openTestDatabase(t)
-	found, err := identitypostgres.NewRepository(reopened.Pool).FindByEmail(context.Background(), email)
-	if err != nil {
-		t.Fatalf("FindByEmail() after reopen error = %v", err)
-	}
-	if found.ID != created.ID {
-		t.Errorf("found.ID = %q, want %q", found.ID, created.ID)
+	reopened := testpg.OpenDatabase(t)
+	_, err = identitypostgres.NewRepository(reopened.Pool).Create(context.Background(), identity.NewUser{Email: email, PasswordHash: "hash"})
+	if !errors.Is(err, identity.ErrEmailAlreadyExists) {
+		t.Fatalf("Create() after reopen error = %v, want ErrEmailAlreadyExists", err)
 	}
 }

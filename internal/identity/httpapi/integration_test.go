@@ -7,79 +7,35 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/golang-migrate/migrate/v4"
-
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/httpapi"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/password"
 	identitypostgres "github.com/JonatanGarbuyo/lds-user-service/internal/identity/postgres"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/testpg"
 	platformpostgres "github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
-	"github.com/JonatanGarbuyo/lds-user-service/migrations"
-)
-
-var (
-	integrationMigrateOnce sync.Once
-	integrationMigrateErr  error
 )
 
 type integrationServer struct {
-	url        string
-	db         *platformpostgres.DB
-	repository *identitypostgres.Repository
-}
-
-func openIntegrationDatabase(t *testing.T) *platformpostgres.DB {
-	t.Helper()
-
-	databaseURL := os.Getenv("TEST_DATABASE_URL")
-	if databaseURL == "" {
-		t.Skip("TEST_DATABASE_URL is not set")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	db, err := platformpostgres.Open(ctx, databaseURL, 10)
-	if err != nil {
-		t.Fatalf("open test database: %v", err)
-	}
-	t.Cleanup(db.Close)
-
-	integrationMigrateOnce.Do(func() {
-		migrator, err := migrations.Open(databaseURL)
-		if err != nil {
-			integrationMigrateErr = err
-			return
-		}
-		defer func() { _, _ = migrator.Close() }()
-
-		if err := migrator.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
-			integrationMigrateErr = err
-		}
-	})
-	if integrationMigrateErr != nil {
-		t.Fatalf("apply migrations: %v", integrationMigrateErr)
-	}
-
-	return db
+	url       string
+	db        *platformpostgres.DB
+	server    *httptest.Server
+	closeOnce sync.Once
 }
 
 func newIntegrationServer(t *testing.T) *integrationServer {
 	t.Helper()
 
-	db := openIntegrationDatabase(t)
+	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	register := identity.NewRegisterUser(repository, password.New())
 	handler := httpapi.New(register, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -87,9 +43,21 @@ func newIntegrationServer(t *testing.T) *integrationServer {
 	mux := http.NewServeMux()
 	handler.Register(mux)
 	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
 
-	return &integrationServer{url: server.URL, db: db, repository: repository}
+	result := &integrationServer{
+		url:    server.URL,
+		db:     db,
+		server: server,
+	}
+	t.Cleanup(result.Close)
+	return result
+}
+
+func (s *integrationServer) Close() {
+	s.closeOnce.Do(func() {
+		s.server.Close()
+		s.db.Close()
+	})
 }
 
 func uniqueIntegrationEmail(t *testing.T) string {
@@ -126,21 +94,13 @@ func TestRegisterEndpointPersistsUserInPostgres(t *testing.T) {
 		t.Errorf("user.status = %q, want active", user.Status)
 	}
 
-	found, err := server.repository.FindByEmail(context.Background(), email)
-	if err != nil {
-		t.Fatalf("FindByEmail() error = %v", err)
-	}
-	if found.ID != user.ID {
-		t.Errorf("found.ID = %q, want %q", found.ID, user.ID)
-	}
-
 	var (
 		storedEmail   string
 		passwordHash  string
 		emailVerified bool
 		storedStatus  string
 	)
-	err = server.db.Pool.QueryRow(
+	err := server.db.Pool.QueryRow(
 		context.Background(),
 		`SELECT email, password_hash, email_verified, status FROM users WHERE id = $1`,
 		user.ID,
@@ -175,23 +135,116 @@ func TestRegisterEndpointPersistsUserInPostgres(t *testing.T) {
 	}
 }
 
-func TestRegisterEndpointPersistsUserAcrossPoolReopen(t *testing.T) {
+func TestRegisterEndpointRejectsInvalidInputInPostgres(t *testing.T) {
 	server := newIntegrationServer(t)
+
+	tests := []struct {
+		name        string
+		email       string
+		body        string
+		contentType string
+		wantStatus  int
+		wantCode    string
+	}{
+		{
+			name:        "invalid email",
+			email:       "not-an-email",
+			body:        `{"email":"not-an-email","password":"correct horse battery"}`,
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "VALIDATION_ERROR",
+		},
+		{
+			name:        "short password",
+			body:        "",
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "VALIDATION_ERROR",
+		},
+		{
+			name:        "malformed JSON",
+			body:        `{`,
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "VALIDATION_ERROR",
+		},
+		{
+			name:        "unknown field",
+			body:        "",
+			contentType: "application/json",
+			wantStatus:  http.StatusBadRequest,
+			wantCode:    "VALIDATION_ERROR",
+		},
+		{
+			name:        "wrong content type",
+			body:        "",
+			contentType: "text/plain",
+			wantStatus:  http.StatusUnsupportedMediaType,
+			wantCode:    "UNSUPPORTED_MEDIA_TYPE",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			email := test.email
+			body := test.body
+			if email == "" {
+				email = uniqueIntegrationEmail(t)
+			}
+			if body == "" {
+				body = fmt.Sprintf(`{"email":%q,"password":"short"}`, email)
+			}
+			if test.name == "unknown field" {
+				body = fmt.Sprintf(`{"email":%q,"password":"correct horse battery","role":"admin"}`, email)
+			}
+
+			headers := map[string]string{"Content-Type": test.contentType}
+			status, _, responseBody := post(t, server.url, body, headers)
+			if status != test.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", status, test.wantStatus, responseBody)
+			}
+			if response := decodeError(t, responseBody); response.Error.Code != test.wantCode {
+				t.Errorf("error.code = %q, want %q", response.Error.Code, test.wantCode)
+			}
+
+			if test.name == "malformed JSON" {
+				return
+			}
+			var count int
+			if err := server.db.Pool.QueryRow(context.Background(), `SELECT count(*) FROM users WHERE email = $1`, email).Scan(&count); err != nil {
+				t.Fatalf("count users: %v", err)
+			}
+			if count != 0 {
+				t.Errorf("users with email = %d, want 0", count)
+			}
+		})
+	}
+}
+
+func TestRegisterEndpointPersistsUserAcrossServiceRestart(t *testing.T) {
+	first := newIntegrationServer(t)
 	email := uniqueIntegrationEmail(t)
 
-	status, _, body := post(t, server.url, fmt.Sprintf(`{"email":%q,"password":"correct horse battery"}`, email), jsonHeaders())
+	status, _, body := post(t, first.url, fmt.Sprintf(`{"email":%q,"password":"correct horse battery"}`, email), jsonHeaders())
 	if status != http.StatusCreated {
 		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusCreated, body)
 	}
 	user := decodeUser(t, body)
 
-	reopened := openIntegrationDatabase(t)
-	found, err := identitypostgres.NewRepository(reopened.Pool).FindByEmail(context.Background(), email)
-	if err != nil {
-		t.Fatalf("FindByEmail() after reopen error = %v", err)
+	first.Close()
+
+	second := newIntegrationServer(t)
+	status, _, body = post(t, second.url, fmt.Sprintf(`{"email":%q,"password":"another strong password"}`, email), jsonHeaders())
+	if status != http.StatusConflict {
+		t.Fatalf("status after restart = %d, want %d; body = %s", status, http.StatusConflict, body)
 	}
-	if found.ID != user.ID {
-		t.Errorf("found.ID = %q, want %q", found.ID, user.ID)
+
+	var storedID string
+	if err := second.db.Pool.QueryRow(context.Background(), `SELECT id::text FROM users WHERE email = $1`, email).Scan(&storedID); err != nil {
+		t.Fatalf("query stored user after restart: %v", err)
+	}
+	if storedID != user.ID {
+		t.Errorf("stored ID after restart = %q, want %q", storedID, user.ID)
 	}
 }
 
