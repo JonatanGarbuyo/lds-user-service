@@ -134,3 +134,29 @@ func TestServerUnknownRouteReturnsNotFound(t *testing.T) {
 		t.Errorf("GET /v1/users status = %d, want %d", status, http.StatusNotFound)
 	}
 }
+
+func TestServerRegistersAdditionalRoutes(t *testing.T) {
+	srv := httpserver.New(
+		"127.0.0.1:0",
+		pingerFunc(func(context.Context) error { return nil }),
+		newTestLogger(),
+		func(mux *http.ServeMux) {
+			mux.HandleFunc("GET /custom", func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			})
+		},
+	)
+	if err := srv.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	})
+
+	status, _ := get(t, "http://"+srv.Addr()+"/custom")
+	if status != http.StatusNoContent {
+		t.Errorf("GET /custom status = %d, want %d", status, http.StatusNoContent)
+	}
+}

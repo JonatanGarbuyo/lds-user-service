@@ -46,6 +46,9 @@ jobs:
           version: v2.15.0
           args: --timeout=5m
 
+      - name: Lint OpenAPI contract
+        run: npx --yes @redocly/cli@2.65.0 lint api/openapi.yaml
+
   migrations:
     name: Migrations against PostgreSQL
     runs-on: ubuntu-latest
@@ -82,11 +85,14 @@ jobs:
       - name: Show migration version
         run: go run ./cmd/migrate version
 
-      - name: Roll back baseline migration
+      - name: Roll back the latest migration
         run: go run ./cmd/migrate down 1
 
       - name: Show version after rollback
         run: go run ./cmd/migrate version
+
+      - name: Re-apply migrations
+        run: go run ./cmd/migrate up
 
       - name: Run integration tests
         run: go test -tags=integration ./...

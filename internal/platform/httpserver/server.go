@@ -22,7 +22,7 @@ type Server struct {
 	listener   net.Listener
 }
 
-func New(addr string, pinger Pinger, logger *slog.Logger) *Server {
+func New(addr string, pinger Pinger, logger *slog.Logger, register ...func(*http.ServeMux)) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -30,6 +30,9 @@ func New(addr string, pinger Pinger, logger *slog.Logger) *Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.HandleFunc("GET /readyz", readyz(pinger))
+	for _, routes := range register {
+		routes(mux)
+	}
 
 	return &Server{
 		logger: logger,
