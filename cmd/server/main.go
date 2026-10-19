@@ -8,6 +8,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/httpapi"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/password"
+	identitypostgres "github.com/JonatanGarbuyo/lds-user-service/internal/identity/postgres"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/config"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
@@ -44,7 +48,8 @@ func run() error {
 	cancelConnect()
 	defer db.Close()
 
-	server := httpserver.New(cfg.HTTPAddr, db, logger)
+	registerUser := identity.NewRegisterUser(identitypostgres.NewRepository(db.Pool), password.New())
+	server := httpserver.New(cfg.HTTPAddr, db, logger, httpapi.New(registerUser, logger).Register)
 	if err := server.Start(ctx); err != nil {
 		return fmt.Errorf("start http server: %w", err)
 	}

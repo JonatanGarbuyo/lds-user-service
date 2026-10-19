@@ -2,11 +2,13 @@
 
 Servicio independiente de gestión de usuarios para aplicaciones consumidoras. Su núcleo cubre registro, autenticación y recuperación de acceso; puede ampliarse mediante módulos, como suscripciones y comentarios.
 
-## Estado actual: T00 — entorno de desarrollo
+## Estado actual: T00 (entorno) + T01 (registro básico de User)
 
-Esta rama implementa **sólo el entorno reproducible** descrito en el ticket [#28](https://github.com/JonatanGarbuyo/lds-user-service/issues/28). Todavía **no** existen funcionalidades de negocio: no hay registro, login, sesiones, usuarios, correo ni administración.
+El entorno reproducible del ticket [#28](https://github.com/JonatanGarbuyo/lds-user-service/issues/28) sigue vigente. El ticket [#10](https://github.com/JonatanGarbuyo/lds-user-service/issues/10) incorpora **exclusivamente el registro básico de User** mediante `POST /v1/users`, con persistencia PostgreSQL y contrato OpenAPI 3.1.
 
-El binario arranca un servidor HTTP mínimo con dos comprobaciones provisionales:
+Todavía **no** existen verificación de email, login, logout, sesiones, recuperación de contraseña ni administración. Registrar un User no crea cookie, Bearer ni sesión. `emailVerified` queda en `false` hasta que T02 implemente la verificación.
+
+Probes provisionales del entorno:
 
 - `GET /healthz` — prueba de vida del proceso.
 - `GET /readyz` — prueba de disponibilidad; comprueba PostgreSQL.
@@ -34,6 +36,40 @@ curl http://127.0.0.1:8080/readyz
 ```
 
 `make up` construye la imagen y arranca PostgreSQL y el servicio en segundo plano. `make migrate` aplica las migraciones **explícitamente**; el servidor nunca las ejecuta al iniciar.
+
+## Registro de User
+
+El contrato completo vive en [`api/openapi.yaml`](api/openapi.yaml) (OpenAPI 3.1). La única operación pública implementada en T01 es:
+
+```bash
+curl -i -X POST http://127.0.0.1:8080/v1/users \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"person@example.com","password":"correct horse battery"}'
+```
+
+Respuesta `201 Created`:
+
+```json
+{
+  "id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+  "email": "person@example.com",
+  "emailVerified": false,
+  "status": "active",
+  "createdAt": "2026-10-19T12:00:00Z",
+  "updatedAt": "2026-10-19T12:00:00Z"
+}
+```
+
+Reglas relevantes:
+
+- El email se recorta y se normaliza a minúsculas antes de persistirse. La columna tiene una restricción única, por lo que dos registros concurrentes con el mismo email producen un único User y un `409 EMAIL_ALREADY_EXISTS` para el resto.
+- La contraseña debe tener entre 12 y 256 caracteres. Se almacena como hash **Argon2id** (64 MiB, 3 iteraciones, paralelismo 2, salt aleatorio de 16 bytes) en formato PHC; nunca se devuelve ni se registra en logs.
+- El hashing se limita a **2 ejecuciones simultáneas por proceso** para acotar el uso de memoria (2 × 64 MiB). Si ambas están ocupadas, el registro falla rápido con `503 SERVICE_UNAVAILABLE` y `Retry-After: 1`; no se encola trabajo adicional.
+- `id` es un UUID estable generado por PostgreSQL, independiente del email.
+- `emailVerified=false` y `status=active` son conceptos independientes.
+- La respuesta no incluye `Set-Cookie` ni `Authorization`, y usa `Cache-Control: no-store`.
+- Los errores usan el envelope `error.code`, `error.message`, `error.requestId` y `error.fields` opcional. Se incluye `X-Request-Id` en todas las respuestas.
+- Los cuerpos se limitan a 1 MiB y deben usar `Content-Type: application/json`; los campos desconocidos se rechazan.
 
 Para desarrollo con logs en primer plano:
 
@@ -105,7 +141,7 @@ Las migraciones viven en `migrations/` y siguen el formato:
 <version>_<descripcion>.down.sql
 ```
 
-El baseline `000001_baseline` es intencionadamente un no-op: permite comprobar el mecanismo de aplicación, rollback y consulta de versión sin crear tablas de negocio. golang-migrate crea su propia tabla de control `schema_migrations`. Los tickets funcionales añadirán migraciones reales.
+El baseline `000001_baseline` es intencionadamente un no-op: permite comprobar el mecanismo de aplicación, rollback y consulta de versión. La migración `000002_users` crea la tabla mínima `users` con email normalizado único, hash de contraseña, `email_verified`, `status`, timestamps y sus restricciones. golang-migrate crea su propia tabla de control `schema_migrations`. Los siguientes tickets añadirán sus propias migraciones.
 
 ```bash
 make migrate            # aplica todo lo pendiente
@@ -125,14 +161,16 @@ make fmt-check
 make lint
 ```
 
-Los tests unitarios cubren la configuración y el ciclo de arranque/apagado del servidor HTTP, incluidas las respuestas de `/healthz` y `/readyz`. `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
+Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP y el hasher Argon2id. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, inputs inválidos, duplicados, concurrencia, saturación del hashing, reinicio del servicio y ausencia de credenciales.
+
+`make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
 
 ## CI
 
 `.github/workflows/ci.yml` ejecuta en cada push a `main` y en cada pull request:
 
-1. `go build ./...`, `go vet ./...`, comprobación de `gofmt`, `go test -race ./...` y golangci-lint `v2.15.0`.
-2. Aplicación, consulta y rollback de migraciones contra un PostgreSQL 17 real.
+1. `go build ./...`, `go vet ./...`, comprobación de `gofmt`, `go test -race ./...`, golangci-lint `v2.15.0` y validación del contrato con Redocly CLI.
+2. Aplicación, consulta, rollback y reaplicación de migraciones contra un PostgreSQL 17 real.
 3. Smoke test de Docker Compose: arranque, espera de `/readyz`, migraciones, healthcheck del contenedor y limpieza de volúmenes.
 
 Para reproducirlo localmente:
@@ -152,16 +190,21 @@ make clean
 ## Estructura
 
 ```text
-cmd/server/                    punto de entrada del servicio
-cmd/migrate/                   CLI de migraciones
-internal/platform/config/      carga y validación de configuración
-internal/platform/httpserver/  transporte HTTP mínimo y ciclo de vida
-internal/platform/postgres/    adaptador PostgreSQL (pgx)
-migrations/                    migraciones versionadas y runner embebido
-docs/adr/                      decisiones de arquitectura
+api/openapi.yaml                     contrato HTTP OpenAPI 3.1
+cmd/server/                          punto de entrada y composición de dependencias
+cmd/migrate/                         CLI de migraciones
+internal/identity/                   dominio, validaciones y caso de uso de registro
+internal/identity/password/          adaptador Argon2id
+internal/identity/postgres/          adaptador PostgreSQL de UserRepository
+internal/identity/httpapi/           transporte HTTP de POST /v1/users
+internal/platform/config/            carga y validación de configuración
+internal/platform/httpserver/        transporte HTTP y ciclo de vida
+internal/platform/postgres/          pool PostgreSQL compartido (pgx)
+migrations/                          migraciones versionadas y runner embebido
+docs/adr/                            decisiones de arquitectura
 ```
 
-La infraestructura transversal vive bajo `internal/platform/`. La estructura principal por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md); las features de negocio se incorporarán con sus tickets, sin crear paquetes vacíos.
+La infraestructura transversal vive bajo `internal/platform/`. `internal/identity` contiene el dominio y el caso de uso sin importar HTTP ni PostgreSQL; los adaptadores concretos implementan el puerto `identity.UserRepository` y se componen en `cmd/server`. La estructura por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md).
 
 ## Troubleshooting
 

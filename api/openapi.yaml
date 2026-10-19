@@ -1,0 +1,317 @@
+openapi: 3.1.0
+info:
+  title: LDS User Service API
+  version: 1.0.0
+  description: |
+    Public HTTP contract for the LDS User Service.
+
+    Version 1 currently covers basic User registration. Email verification, login,
+    sessions and administrative operations are outside this contract until their
+    respective tickets are implemented.
+
+    Errors use a stable envelope with `error.code`, `error.message`,
+    `error.requestId` and optional per-field messages in `error.fields`.
+servers:
+  - url: http://127.0.0.1:8080
+    description: Local development
+tags:
+  - name: Identity
+    description: User identity lifecycle.
+paths:
+  /v1/users:
+    post:
+      tags:
+        - Identity
+      operationId: registerUser
+      summary: Register a User
+      description: |
+        Creates a User from an email and password, stores an Argon2id password
+        hash, and returns the public User model. The User identifier is stable
+        and independent from the email. Registration does not create a session,
+        does not set cookies and does not issue a Bearer credential.
+
+        Emails are trimmed and normalized to lowercase before persistence.
+        Duplicate emails, including concurrent attempts, are rejected with
+        `409 EMAIL_ALREADY_EXISTS`.
+
+        Password hashing concurrency is bounded per service process to protect
+        memory. When all hashing slots are busy, registration is rejected with
+        `503 SERVICE_UNAVAILABLE` and a `Retry-After` header.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterUserRequest'
+            examples:
+              default:
+                summary: Valid registration
+                value:
+                  email: person@example.com
+                  password: correct horse battery
+      responses:
+        '201':
+          description: User registered successfully.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                default:
+                  summary: New active User with an unverified email
+                  value:
+                    id: 0f8fad5b-d9cb-469f-a165-70867728950e
+                    email: person@example.com
+                    emailVerified: false
+                    status: active
+                    createdAt: '2026-10-19T12:00:00Z'
+                    updatedAt: '2026-10-19T12:00:00Z'
+        '400':
+          description: Malformed JSON or invalid field values.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                validation:
+                  summary: Invalid email and password
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request contains invalid fields.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                      fields:
+                        email: must be a valid email address
+                        password: must be at least 12 characters
+        '409':
+          description: The normalized email is already registered.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                duplicate:
+                  summary: Duplicate email
+                  value:
+                    error:
+                      code: EMAIL_ALREADY_EXISTS
+                      message: An account with this email already exists.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '413':
+          description: Request body exceeds the 1 MiB limit.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                tooLarge:
+                  summary: Oversized body
+                  value:
+                    error:
+                      code: PAYLOAD_TOO_LARGE
+                      message: Request body is too large.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '415':
+          description: Content-Type is not application/json.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                unsupportedMediaType:
+                  summary: Unsupported media type
+                  value:
+                    error:
+                      code: UNSUPPORTED_MEDIA_TYPE
+                      message: Content-Type must be application/json.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '500':
+          description: Unexpected server failure. No internal details are exposed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                internal:
+                  summary: Internal error
+                  value:
+                    error:
+                      code: INTERNAL_ERROR
+                      message: An unexpected error occurred.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Registration hashing capacity is temporarily exhausted.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  summary: Too many simultaneous registrations
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Registration is temporarily unavailable.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+components:
+  headers:
+    XRequestId:
+      description: Request correlation identifier. Echoed when a valid client value is supplied.
+      schema:
+        type: string
+        maxLength: 128
+    CacheControl:
+      description: Responses containing account data must not be cached.
+      schema:
+        type: string
+        const: no-store
+    RetryAfter:
+      description: Seconds to wait before retrying registration.
+      schema:
+        type: string
+        example: '1'
+  schemas:
+    RegisterUserRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email address. Surrounding whitespace is ignored and the value is normalized to lowercase.
+          example: person@example.com
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 256
+          writeOnly: true
+          description: Password of 12 to 256 characters. It is hashed with Argon2id and never stored or returned in plaintext.
+          example: correct horse battery
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - email
+        - emailVerified
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+          description: Stable, opaque User identifier. It is independent from the email and never changes.
+          examples:
+            - 0f8fad5b-d9cb-469f-a165-70867728950e
+        email:
+          type: string
+          format: email
+          description: Normalized email address.
+          example: person@example.com
+        emailVerified:
+          type: boolean
+          description: Whether the User has proven control of the email. Always false until Email Verification is implemented.
+          example: false
+        status:
+          type: string
+          description: Account status. It is independent from email verification.
+          enum:
+            - active
+            - suspended
+            - deletion_requested
+          example: active
+        createdAt:
+          type: string
+          format: date-time
+          description: Creation timestamp in RFC 3339 UTC.
+          example: '2026-10-19T12:00:00Z'
+        updatedAt:
+          type: string
+          format: date-time
+          description: Last update timestamp in RFC 3339 UTC.
+          example: '2026-10-19T12:00:00Z'
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+    ErrorBody:
+      type: object
+      additionalProperties: false
+      required:
+        - code
+        - message
+        - requestId
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable error code.
+          enum:
+            - VALIDATION_ERROR
+            - EMAIL_ALREADY_EXISTS
+            - UNSUPPORTED_MEDIA_TYPE
+            - PAYLOAD_TOO_LARGE
+            - SERVICE_UNAVAILABLE
+            - INTERNAL_ERROR
+          example: VALIDATION_ERROR
+        message:
+          type: string
+          description: Human-readable error description. It never contains secrets.
+          example: The request contains invalid fields.
+        requestId:
+          type: string
+          description: Correlation identifier for the request.
+          example: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        fields:
+          type: object
+          description: Optional per-field validation messages.
+          additionalProperties:
+            type: string
+          example:
+            email: must be a valid email address
