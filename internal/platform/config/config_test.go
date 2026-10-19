@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonatanGarbuyo/lds-user-service/internal/config"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/config"
 )
 
 func env(values map[string]string) func(string) string {

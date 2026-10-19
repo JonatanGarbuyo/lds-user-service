@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/JonatanGarbuyo/lds-user-service/internal/config"
-	"github.com/JonatanGarbuyo/lds-user-service/internal/httpserver"
-	"github.com/JonatanGarbuyo/lds-user-service/internal/postgres"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/config"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
 )
 
 func main() {

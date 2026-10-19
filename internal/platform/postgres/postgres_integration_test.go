@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonatanGarbuyo/lds-user-service/internal/postgres"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
 )
 
 func TestOpenAndPing(t *testing.T) {

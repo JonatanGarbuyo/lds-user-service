@@ -62,8 +62,9 @@ test-race:
 	$(GO) test -race ./...
 
 test-integration:
-	$(COMPOSE) up -d postgres
-	TEST_DATABASE_URL="$${TEST_DATABASE_URL:-postgres://lds:lds_dev_password@localhost:5432/lds_user_service?sslmode=disable}" \
+	$(COMPOSE) up -d --wait postgres
+	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; \
+		TEST_DATABASE_URL="$${TEST_DATABASE_URL:-postgres://$${POSTGRES_USER:-lds}:$${POSTGRES_PASSWORD:-lds_dev_password}@localhost:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB:-lds_user_service}?sslmode=disable}" \
 		$(GO) test -tags=integration ./...
 
 lint:

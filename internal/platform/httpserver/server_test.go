@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonatanGarbuyo/lds-user-service/internal/httpserver"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
 )
 
 type pingerFunc func(context.Context) error

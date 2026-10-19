@@ -120,12 +120,12 @@ Las migraciones no se ejecutan automáticamente al arrancar el servidor ni al ha
 ```bash
 make test
 make test-race
-make test-integration   # levanta PostgreSQL con Compose y ejecuta tests con -tags=integration
+make test-integration   # espera PostgreSQL healthy y ejecuta tests con -tags=integration
 make fmt-check
 make lint
 ```
 
-Los tests unitarios cubren la configuración y el ciclo de arranque/apagado del servidor HTTP, incluidas las respuestas de `/healthz` y `/readyz`. Los tests con etiqueta `integration` requieren `TEST_DATABASE_URL`; por defecto apuntan a la instancia de Compose.
+Los tests unitarios cubren la configuración y el ciclo de arranque/apagado del servidor HTTP, incluidas las respuestas de `/healthz` y `/readyz`. `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
 
 ## CI
 
@@ -152,15 +152,16 @@ make clean
 ## Estructura
 
 ```text
-cmd/server/            punto de entrada del servicio
-cmd/migrate/           CLI de migraciones
-internal/config/       carga y validación de configuración
-internal/httpserver/   transporte HTTP mínimo y ciclo de vida
-internal/postgres/     adaptador PostgreSQL (pgx)
-migrations/            migraciones versionadas y runner embebido
+cmd/server/                    punto de entrada del servicio
+cmd/migrate/                   CLI de migraciones
+internal/platform/config/      carga y validación de configuración
+internal/platform/httpserver/  transporte HTTP mínimo y ciclo de vida
+internal/platform/postgres/    adaptador PostgreSQL (pgx)
+migrations/                    migraciones versionadas y runner embebido
+docs/adr/                      decisiones de arquitectura
 ```
 
-La estructura mantiene separados configuración, transporte y persistencia, sin introducir todavía capas de dominio ficticias. Los puertos/adaptadores de negocio se incorporarán con T01.
+La infraestructura transversal vive bajo `internal/platform/`. La estructura principal por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md); las features de negocio se incorporarán con sus tickets, sin crear paquetes vacíos.
 
 ## Troubleshooting
 
