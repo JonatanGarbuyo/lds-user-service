@@ -34,10 +34,18 @@ type integrationServer struct {
 
 func newIntegrationServer(t *testing.T) *integrationServer {
 	t.Helper()
+	return newIntegrationServerWithHashLimit(t, 0)
+}
+
+func newIntegrationServerWithHashLimit(t *testing.T, hashLimit int) *integrationServer {
+	t.Helper()
 
 	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
 	register := identity.NewRegisterUser(repository, password.New())
+	if hashLimit > 0 {
+		register = identity.NewRegisterUserWithLimit(repository, password.New(), hashLimit)
+	}
 	handler := httpapi.New(register, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	mux := http.NewServeMux()
@@ -275,10 +283,10 @@ func TestRegisterEndpointRejectsDuplicateEmailInPostgres(t *testing.T) {
 }
 
 func TestRegisterEndpointHandlesConcurrentDuplicateRegistrations(t *testing.T) {
-	server := newIntegrationServer(t)
-	email := uniqueIntegrationEmail(t)
-
 	const workers = 5
+
+	server := newIntegrationServerWithHashLimit(t, workers)
+	email := uniqueIntegrationEmail(t)
 	variants := []string{
 		email,
 		strings.ToUpper(email),

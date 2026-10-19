@@ -65,6 +65,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			code:    "EMAIL_ALREADY_EXISTS",
 			message: "An account with this email already exists.",
 		})
+	case errors.Is(err, identity.ErrRegistrationBusy):
+		w.Header().Set("Retry-After", "1")
+		writeError(w, requestID, &apiError{
+			status:  http.StatusServiceUnavailable,
+			code:    "SERVICE_UNAVAILABLE",
+			message: "Registration is temporarily unavailable.",
+		})
 	default:
 		var validationErr *identity.ValidationError
 		if errors.As(err, &validationErr) {
@@ -146,7 +153,11 @@ func decodeRegisterRequest(w http.ResponseWriter, r *http.Request) (identity.Reg
 	if err := decoder.Decode(&request); err != nil {
 		return identity.RegisterUserInput{}, decodeFailure(err)
 	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if err := decoder.Decode(&struct{}{}); err != nil {
+		if !errors.Is(err, io.EOF) {
+			return identity.RegisterUserInput{}, decodeFailure(err)
+		}
+	} else {
 		return identity.RegisterUserInput{}, invalidJSON()
 	}
 

@@ -64,6 +64,7 @@ Reglas relevantes:
 
 - El email se recorta y se normaliza a minúsculas antes de persistirse. La columna tiene una restricción única, por lo que dos registros concurrentes con el mismo email producen un único User y un `409 EMAIL_ALREADY_EXISTS` para el resto.
 - La contraseña debe tener entre 12 y 256 caracteres. Se almacena como hash **Argon2id** (64 MiB, 3 iteraciones, paralelismo 2, salt aleatorio de 16 bytes) en formato PHC; nunca se devuelve ni se registra en logs.
+- El hashing se limita a **2 ejecuciones simultáneas por proceso** para acotar el uso de memoria (2 × 64 MiB). Si ambas están ocupadas, el registro falla rápido con `503 SERVICE_UNAVAILABLE` y `Retry-After: 1`; no se encola trabajo adicional.
 - `id` es un UUID estable generado por PostgreSQL, independiente del email.
 - `emailVerified=false` y `status=active` son conceptos independientes.
 - La respuesta no incluye `Set-Cookie` ni `Authorization`, y usa `Cache-Control: no-store`.
@@ -160,7 +161,7 @@ make fmt-check
 make lint
 ```
 
-Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP y el hasher Argon2id. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, inputs inválidos, duplicados, concurrencia, reinicio del servicio y ausencia de credenciales.
+Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP y el hasher Argon2id. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, inputs inválidos, duplicados, concurrencia, saturación del hashing, reinicio del servicio y ausencia de credenciales.
 
 `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
 

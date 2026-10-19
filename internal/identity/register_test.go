@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -54,6 +55,29 @@ func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (
 	r.users[newUser.Email] = user
 	r.passwords[newUser.Email] = newUser.PasswordHash
 	return user, nil
+}
+
+type blockingHasher struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	calls   atomic.Int32
+}
+
+func newBlockingHasher() *blockingHasher {
+	return &blockingHasher{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (h *blockingHasher) Hash(password string) (string, error) {
+	h.calls.Add(1)
+	h.once.Do(func() { close(h.started) })
+	if password == "blocking password" {
+		<-h.release
+	}
+	return "hashed:" + password, nil
 }
 
 type stubHasher struct {
@@ -215,5 +239,57 @@ func TestRegisterUserPropagatesRepositoryFailure(t *testing.T) {
 	})
 	if !errors.Is(err, repositoryErr) {
 		t.Fatalf("Execute() error = %v, want %v", err, repositoryErr)
+	}
+}
+
+func TestRegisterUserRejectsWhenHashingCapacityIsFull(t *testing.T) {
+	repository := newMemoryRepository()
+	hasher := newBlockingHasher()
+	register := identity.NewRegisterUserWithLimit(repository, hasher, 1)
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := register.Execute(context.Background(), identity.RegisterUserInput{
+			Email:    "first@example.com",
+			Password: "blocking password",
+		})
+		firstDone <- err
+	}()
+
+	<-hasher.started
+
+	_, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "second@example.com",
+		Password: "another strong password",
+	})
+	if !errors.Is(err, identity.ErrRegistrationBusy) {
+		t.Fatalf("Execute() while full error = %v, want ErrRegistrationBusy", err)
+	}
+	if calls := hasher.calls.Load(); calls != 1 {
+		t.Errorf("hash calls while full = %d, want 1", calls)
+	}
+
+	released := false
+	defer func() {
+		if !released {
+			close(hasher.release)
+		}
+	}()
+
+	close(hasher.release)
+	released = true
+
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Execute() error = %v", err)
+	}
+
+	if _, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "third@example.com",
+		Password: "third strong password",
+	}); err != nil {
+		t.Fatalf("Execute() after capacity freed error = %v", err)
+	}
+	if calls := hasher.calls.Load(); calls != 2 {
+		t.Errorf("hash calls after capacity freed = %d, want 2", calls)
 	}
 }

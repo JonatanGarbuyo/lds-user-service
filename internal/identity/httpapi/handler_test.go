@@ -64,6 +64,12 @@ func (prefixHasher) Hash(password string) (string, error) {
 	return "hash:" + password, nil
 }
 
+type busyRegistrar struct{}
+
+func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.User, error) {
+	return identity.User{}, identity.ErrRegistrationBusy
+}
+
 type testServer struct {
 	url        string
 	repository *memoryRepository
@@ -295,6 +301,44 @@ func TestRegisterEndpointRejectsOversizedBody(t *testing.T) {
 	response := decodeError(t, responseBody)
 	if response.Error.Code != "PAYLOAD_TOO_LARGE" {
 		t.Errorf("error.code = %q, want PAYLOAD_TOO_LARGE", response.Error.Code)
+	}
+}
+
+func TestRegisterEndpointRejectsOversizedTrailingBody(t *testing.T) {
+	server := newTestServer(t)
+	body := `{"email":"person@example.com","password":"correct horse battery"}` + strings.Repeat(" ", 2<<20)
+
+	status, _, responseBody := post(t, server.url, body, jsonHeaders())
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusRequestEntityTooLarge, responseBody)
+	}
+
+	response := decodeError(t, responseBody)
+	if response.Error.Code != "PAYLOAD_TOO_LARGE" {
+		t.Errorf("error.code = %q, want PAYLOAD_TOO_LARGE", response.Error.Code)
+	}
+}
+
+func TestRegisterEndpointReturnsServiceUnavailableWhenCapacityIsExhausted(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := httpapi.New(busyRegistrar{}, logger)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	status, headers, body := post(t, server.URL, `{"email":"person@example.com","password":"correct horse battery"}`, jsonHeaders())
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusServiceUnavailable, body)
+	}
+	if retryAfter := headers.Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("Retry-After = %q, want 1", retryAfter)
+	}
+
+	response := decodeError(t, body)
+	if response.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Errorf("error.code = %q, want SERVICE_UNAVAILABLE", response.Error.Code)
 	}
 }
 

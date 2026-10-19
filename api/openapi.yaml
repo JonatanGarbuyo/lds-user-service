@@ -33,6 +33,10 @@ paths:
         Emails are trimmed and normalized to lowercase before persistence.
         Duplicate emails, including concurrent attempts, are rejected with
         `409 EMAIL_ALREADY_EXISTS`.
+
+        Password hashing concurrency is bounded per service process to protect
+        memory. When all hashing slots are busy, registration is rejected with
+        `503 SERVICE_UNAVAILABLE` and a `Retry-After` header.
       security: []
       requestBody:
         required: true
@@ -166,6 +170,27 @@ paths:
                       code: INTERNAL_ERROR
                       message: An unexpected error occurred.
                       requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Registration hashing capacity is temporarily exhausted.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  summary: Too many simultaneous registrations
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Registration is temporarily unavailable.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
 components:
   headers:
     XRequestId:
@@ -178,6 +203,11 @@ components:
       schema:
         type: string
         const: no-store
+    RetryAfter:
+      description: Seconds to wait before retrying registration.
+      schema:
+        type: string
+        example: '1'
   schemas:
     RegisterUserRequest:
       type: object
@@ -267,6 +297,7 @@ components:
             - EMAIL_ALREADY_EXISTS
             - UNSUPPORTED_MEDIA_TYPE
             - PAYLOAD_TOO_LARGE
+            - SERVICE_UNAVAILABLE
             - INTERNAL_ERROR
           example: VALIDATION_ERROR
         message:
