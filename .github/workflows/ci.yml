@@ -121,7 +121,7 @@ jobs:
       - name: Wait for container health
         run: |
           for attempt in $(seq 1 30); do
-            status="$(docker inspect --format '{{.State.Health.Status}}' "$$(docker compose ps -q app)")"
+            status="$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q app)")"
             if [ "$status" = "healthy" ]; then
               echo "Container is healthy"
               exit 0
