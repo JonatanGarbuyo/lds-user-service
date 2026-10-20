@@ -36,6 +36,7 @@ type EmailVerificationDependencies struct {
 	Users          UserRepository
 	Challenges     EmailVerificationRepository
 	Hasher         SecretHasher
+	HashLimiter    HashLimiter
 	Sender         VerificationEmailSender
 	RequestLimiter AbuseLimiter
 	ConfirmLimiter AbuseLimiter
@@ -48,6 +49,7 @@ type EmailVerificationService struct {
 	users          UserRepository
 	challenges     EmailVerificationRepository
 	hasher         SecretHasher
+	hashLimiter    HashLimiter
 	sender         VerificationEmailSender
 	requestLimiter AbuseLimiter
 	confirmLimiter AbuseLimiter
@@ -66,11 +68,15 @@ func NewEmailVerificationService(dependencies EmailVerificationDependencies) *Em
 	if dependencies.CodeGenerator == nil {
 		dependencies.CodeGenerator = NewVerificationCodeGenerator()
 	}
+	if dependencies.HashLimiter == nil {
+		dependencies.HashLimiter = NewHashLimiter(DefaultMaxConcurrentHashes)
+	}
 
 	return &EmailVerificationService{
 		users:          dependencies.Users,
 		challenges:     dependencies.Challenges,
 		hasher:         dependencies.Hasher,
+		hashLimiter:    dependencies.HashLimiter,
 		sender:         dependencies.Sender,
 		requestLimiter: dependencies.RequestLimiter,
 		confirmLimiter: dependencies.ConfirmLimiter,
@@ -101,11 +107,51 @@ func (s *EmailVerificationService) IssueForUser(ctx context.Context, user User) 
 		return err
 	}
 
-	codeHash, err := s.hasher.Hash(code)
+	codeHash, err := s.hashCode(code)
 	if err != nil {
-		return fmt.Errorf("hash verification code: %w", err)
+		return err
 	}
 
+	return s.createChallengeAndSend(ctx, user, code, codeHash)
+}
+
+func (s *EmailVerificationService) Request(ctx context.Context, input RequestEmailVerificationInput) error {
+	email := NormalizeEmail(input.Email)
+	if err := validateEmailOnly(email); err != nil {
+		return err
+	}
+	if err := allow(s.requestLimiter, "email-verification-request:"+input.ClientIP); err != nil {
+		return err
+	}
+
+	code, err := s.codeGenerator.Generate()
+	if err != nil {
+		return err
+	}
+	codeHash, err := s.hashCode(code)
+	if err != nil {
+		return err
+	}
+
+	user, err := s.users.FindByEmail(ctx, email)
+	if errors.Is(err, ErrUserNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("find user: %w", err)
+	}
+	if user.EmailVerified {
+		return nil
+	}
+
+	err = s.createChallengeAndSend(ctx, user, code, codeHash)
+	if errors.Is(err, ErrResendTooSoon) || errors.Is(err, ErrEmailAlreadyVerified) {
+		return nil
+	}
+	return err
+}
+
+func (s *EmailVerificationService) createChallengeAndSend(ctx context.Context, user User, code, codeHash string) error {
 	now := s.now()
 	expiresAt := now.Add(s.policy.CodeTTL)
 	challenge, err := s.challenges.CreateChallenge(ctx, user.ID, codeHash, now, expiresAt, s.policy.ResendCooldown)
@@ -128,31 +174,30 @@ func (s *EmailVerificationService) IssueForUser(ctx context.Context, user User) 
 	return nil
 }
 
-func (s *EmailVerificationService) Request(ctx context.Context, input RequestEmailVerificationInput) error {
-	email := NormalizeEmail(input.Email)
-	if err := validateEmailOnly(email); err != nil {
-		return err
+func (s *EmailVerificationService) hashCode(code string) (string, error) {
+	if !s.hashLimiter.TryAcquire() {
+		return "", ErrHashingBusy
 	}
-	if err := allow(s.requestLimiter, "email-verification-request:"+input.ClientIP); err != nil {
-		return err
-	}
+	defer s.hashLimiter.Release()
 
-	user, err := s.users.FindByEmail(ctx, email)
-	if errors.Is(err, ErrUserNotFound) {
-		return nil
-	}
+	codeHash, err := s.hasher.Hash(code)
 	if err != nil {
-		return fmt.Errorf("find user: %w", err)
+		return "", fmt.Errorf("hash verification code: %w", err)
 	}
-	if user.EmailVerified {
-		return nil
-	}
+	return codeHash, nil
+}
 
-	err = s.IssueForUser(ctx, user)
-	if errors.Is(err, ErrResendTooSoon) || errors.Is(err, ErrEmailAlreadyVerified) {
-		return nil
+func (s *EmailVerificationService) verifyCode(code, codeHash string) (bool, error) {
+	if !s.hashLimiter.TryAcquire() {
+		return false, ErrHashingBusy
 	}
-	return err
+	defer s.hashLimiter.Release()
+
+	matches, err := s.hasher.Verify(code, codeHash)
+	if err != nil {
+		return false, fmt.Errorf("verify verification code: %w", err)
+	}
+	return matches, nil
 }
 
 func (s *EmailVerificationService) Confirm(ctx context.Context, input ConfirmEmailVerificationInput) (User, error) {
@@ -178,9 +223,9 @@ func (s *EmailVerificationService) Confirm(ctx context.Context, input ConfirmEma
 		return User{}, fmt.Errorf("find verification challenge: %w", err)
 	}
 
-	matches, err := s.hasher.Verify(code, challenge.CodeHash)
+	matches, err := s.verifyCode(code, challenge.CodeHash)
 	if err != nil {
-		return User{}, fmt.Errorf("verify verification code: %w", err)
+		return User{}, err
 	}
 	if !matches {
 		err := s.challenges.RecordFailedAttempt(ctx, challenge.ID, now, s.policy.MaxAttempts)

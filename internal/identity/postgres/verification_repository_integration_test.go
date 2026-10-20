@@ -419,6 +419,58 @@ func TestVerificationRepositoryRejectsUnknownUser(t *testing.T) {
 	}
 }
 
+func TestVerificationRepositoryConcurrentCreateAndConsumeDoNotDeadlock(t *testing.T) {
+	db := testpg.OpenDatabase(t)
+	users := identitypostgres.NewRepository(db.Pool)
+	repository := identitypostgres.NewVerificationRepository(db.Pool)
+
+	for iteration := range 10 {
+		user := createVerificationUser(t, users, uniqueEmail(t))
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		challenge, err := repository.CreateChallenge(context.Background(), user.ID, "hash:012345", now, now.Add(10*time.Minute), verificationTestCooldown)
+		if err != nil {
+			t.Fatalf("iteration %d: first CreateChallenge() error = %v", iteration, err)
+		}
+
+		const workers = 8
+		operationAt := now.Add(2 * verificationTestCooldown)
+		results := make(chan error, workers)
+		start := make(chan struct{})
+		for worker := range workers {
+			go func() {
+				<-start
+				if worker%2 == 0 {
+					_, err := repository.ConsumeAndVerify(context.Background(), challenge.ID, operationAt, 5)
+					results <- err
+					return
+				}
+				_, err := repository.CreateChallenge(
+					context.Background(),
+					user.ID,
+					"hash:222222",
+					operationAt,
+					operationAt.Add(10*time.Minute),
+					verificationTestCooldown,
+				)
+				results <- err
+			}()
+		}
+		close(start)
+
+		for range workers {
+			err := <-results
+			switch {
+			case err == nil:
+			case errors.Is(err, identity.ErrChallengeInactive):
+			case errors.Is(err, identity.ErrResendTooSoon):
+			case errors.Is(err, identity.ErrEmailAlreadyVerified):
+			default:
+				t.Errorf("iteration %d: unexpected error (possible deadlock): %v", iteration, err)
+			}
+		}
+	}
+}
+
 func TestVerificationRepositoryRejectsChallengeForVerifiedUser(t *testing.T) {
 	db := testpg.OpenDatabase(t)
 	users := identitypostgres.NewRepository(db.Pool)

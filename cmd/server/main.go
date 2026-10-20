@@ -61,16 +61,18 @@ func run() error {
 	}
 
 	userRepository := identitypostgres.NewRepository(db.Pool)
+	hashLimiter := identity.NewHashLimiter(identity.DefaultMaxConcurrentHashes)
 	verification := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
 		Users:          userRepository,
 		Challenges:     identitypostgres.NewVerificationRepository(db.Pool),
 		Hasher:         password.New(),
+		HashLimiter:    hashLimiter,
 		Sender:         mailSender,
 		RequestLimiter: ratelimit.New(10, time.Minute),
 		ConfirmLimiter: ratelimit.New(20, time.Minute),
 		Now:            time.Now,
 	})
-	registerUser := identity.NewRegisterUser(userRepository, password.New(), verification)
+	registerUser := identity.NewRegisterUserWithLimiter(userRepository, password.New(), verification, hashLimiter)
 	registerHandler := httpapi.New(registerUser, logger)
 	verificationHandler := httpapi.NewEmailVerification(verification, logger)
 

@@ -307,6 +307,26 @@ paths:
                       code: RATE_LIMITED
                       message: Too many requests. Try again later.
                       requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Hashing capacity is exhausted. Retry the request later.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Email verification is temporarily unavailable.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
         '500':
           description: Unexpected server failure. No internal details are exposed.
           headers:
@@ -434,6 +454,26 @@ paths:
                     error:
                       code: RATE_LIMITED
                       message: Too many requests. Try again later.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Hashing capacity is exhausted. No verification attempt is consumed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Email verification is temporarily unavailable.
                       requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
         '500':
           description: Unexpected server failure. No internal details are exposed.

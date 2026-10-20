@@ -446,7 +446,7 @@ func TestConcurrentConfirmationSucceedsOnce(t *testing.T) {
 	}
 	close(start)
 
-	var confirmed, rejected int
+	var confirmed, rejected, busy int
 	for range workers {
 		res := <-results
 		switch res.status {
@@ -454,12 +454,14 @@ func TestConcurrentConfirmationSucceedsOnce(t *testing.T) {
 			confirmed++
 		case http.StatusBadRequest:
 			rejected++
+		case http.StatusServiceUnavailable:
+			busy++
 		default:
 			t.Errorf("unexpected status = %d; body = %s", res.status, res.body)
 		}
 	}
-	if confirmed != 1 || rejected != workers-1 {
-		t.Errorf("confirmed = %d, rejected = %d, want 1 and %d", confirmed, rejected, workers-1)
+	if confirmed != 1 || rejected+busy != workers-1 {
+		t.Errorf("confirmed = %d, rejected = %d, busy = %d, want 1 and %d", confirmed, rejected, busy, workers-1)
 	}
 
 	verified, _ := storedUserState(t, server, email)
@@ -487,8 +489,10 @@ func TestConcurrentResendLeavesOneActiveChallenge(t *testing.T) {
 	close(start)
 
 	for range workers {
-		if status := <-statuses; status != http.StatusAccepted {
-			t.Errorf("request status = %d, want %d", status, http.StatusAccepted)
+		switch status := <-statuses; status {
+		case http.StatusAccepted, http.StatusServiceUnavailable:
+		default:
+			t.Errorf("request status = %d, want %d or %d", status, http.StatusAccepted, http.StatusServiceUnavailable)
 		}
 	}
 

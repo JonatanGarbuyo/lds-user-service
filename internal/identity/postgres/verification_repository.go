@@ -18,6 +18,15 @@ const (
 		FROM users
 		WHERE id = $1
 		FOR UPDATE`
+	findChallengeUserQuery = `
+		SELECT user_id::text
+		FROM email_verification_challenges
+		WHERE id = $1`
+	lockUserForUpdateQuery = `
+		SELECT id::text
+		FROM users
+		WHERE id = $1
+		FOR UPDATE`
 	lastChallengeQuery = `
 		SELECT created_at
 		FROM email_verification_challenges
@@ -216,6 +225,18 @@ func (r *VerificationRepository) ConsumeAndVerify(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	var userID string
+	if err := tx.QueryRow(ctx, findChallengeUserQuery, challengeID).Scan(&userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.User{}, identity.ErrChallengeInactive
+		}
+		return identity.User{}, fmt.Errorf("find verification challenge owner: %w", err)
+	}
+	if err := tx.QueryRow(ctx, lockUserForUpdateQuery, userID).Scan(&userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.User{}, identity.ErrChallengeInactive
+		}
+		return identity.User{}, fmt.Errorf("lock user for verification: %w", err)
+	}
 	if err := tx.QueryRow(ctx, consumeChallengeQuery, challengeID, now, maxAttempts).Scan(&userID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return identity.User{}, identity.ErrChallengeInactive

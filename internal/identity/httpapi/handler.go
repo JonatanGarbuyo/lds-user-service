@@ -70,12 +70,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			message: "An account with this email already exists.",
 		})
 	case errors.Is(err, identity.ErrRegistrationBusy):
-		w.Header().Set("Retry-After", "1")
-		writeError(w, requestID, &apiError{
-			status:  http.StatusServiceUnavailable,
-			code:    "SERVICE_UNAVAILABLE",
-			message: "Registration is temporarily unavailable.",
-		})
+		writeServiceUnavailable(w, requestID, "Registration is temporarily unavailable.")
 	default:
 		var validationErr *identity.ValidationError
 		if errors.As(err, &validationErr) {

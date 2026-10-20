@@ -5,13 +5,13 @@ import (
 	"fmt"
 )
 
-const defaultMaxConcurrentHashes = 2
+const DefaultMaxConcurrentHashes = 2
 
 type RegisterUser struct {
 	users        UserRepository
 	hasher       PasswordHasher
 	verification EmailVerificationIssuer
-	hashSlots    chan struct{}
+	hashLimiter  HashLimiter
 }
 
 type RegisterUserResult struct {
@@ -20,18 +20,22 @@ type RegisterUserResult struct {
 }
 
 func NewRegisterUser(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer) *RegisterUser {
-	return NewRegisterUserWithLimit(users, hasher, verification, defaultMaxConcurrentHashes)
+	return NewRegisterUserWithLimiter(users, hasher, verification, NewHashLimiter(DefaultMaxConcurrentHashes))
 }
 
 func NewRegisterUserWithLimit(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer, maxConcurrentHashes int) *RegisterUser {
-	if maxConcurrentHashes < 1 {
-		maxConcurrentHashes = 1
+	return NewRegisterUserWithLimiter(users, hasher, verification, NewHashLimiter(maxConcurrentHashes))
+}
+
+func NewRegisterUserWithLimiter(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer, limiter HashLimiter) *RegisterUser {
+	if limiter == nil {
+		limiter = NewHashLimiter(DefaultMaxConcurrentHashes)
 	}
 	return &RegisterUser{
 		users:        users,
 		hasher:       hasher,
 		verification: verification,
-		hashSlots:    make(chan struct{}, maxConcurrentHashes),
+		hashLimiter:  limiter,
 	}
 }
 
@@ -62,12 +66,10 @@ func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (Re
 }
 
 func (r *RegisterUser) hashPassword(password string) (string, error) {
-	select {
-	case r.hashSlots <- struct{}{}:
-	default:
+	if !r.hashLimiter.TryAcquire() {
 		return "", ErrRegistrationBusy
 	}
-	defer func() { <-r.hashSlots }()
+	defer r.hashLimiter.Release()
 
 	passwordHash, err := r.hasher.Hash(password)
 	if err != nil {

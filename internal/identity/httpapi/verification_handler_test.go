@@ -295,6 +295,40 @@ func TestEmailVerificationConfirmReturnsGenericInvalidCode(t *testing.T) {
 	}
 }
 
+func TestEmailVerificationRequestReportsHashingSaturation(t *testing.T) {
+	server := newVerificationTestServer(t)
+	server.verification.requestErr = identity.ErrHashingBusy
+
+	status, headers, body := postPath(t, server.url, "/v1/auth/email-verification/request",
+		`{"email":"person@example.com"}`, jsonHeaders())
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusServiceUnavailable, body)
+	}
+	if retryAfter := headers.Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("Retry-After = %q, want 1", retryAfter)
+	}
+	if response := decodeError(t, body); response.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Errorf("error.code = %q, want SERVICE_UNAVAILABLE", response.Error.Code)
+	}
+}
+
+func TestEmailVerificationConfirmReportsHashingSaturation(t *testing.T) {
+	server := newVerificationTestServer(t)
+	server.verification.confirmErr = identity.ErrHashingBusy
+
+	status, headers, body := postPath(t, server.url, "/v1/auth/email-verification/confirm",
+		`{"email":"person@example.com","code":"012345"}`, jsonHeaders())
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusServiceUnavailable, body)
+	}
+	if retryAfter := headers.Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("Retry-After = %q, want 1", retryAfter)
+	}
+	if response := decodeError(t, body); response.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Errorf("error.code = %q, want SERVICE_UNAVAILABLE", response.Error.Code)
+	}
+}
+
 func TestEmailVerificationConfirmValidatesInput(t *testing.T) {
 	tests := []struct {
 		name      string

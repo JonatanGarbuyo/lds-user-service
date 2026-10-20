@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -662,5 +664,315 @@ func TestGenerateVerificationCodePropagatesRandomFailure(t *testing.T) {
 
 	if _, err := generator.Generate(); err == nil {
 		t.Fatal("Generate() error = nil, want an error")
+	}
+}
+
+type denyHashLimiter struct{}
+
+func (denyHashLimiter) TryAcquire() bool { return false }
+func (denyHashLimiter) Release()         {}
+
+type countingSecretHasher struct {
+	hashCalls   atomic.Int32
+	verifyCalls atomic.Int32
+}
+
+func (h *countingSecretHasher) Hash(secret string) (string, error) {
+	h.hashCalls.Add(1)
+	return "hash:" + secret, nil
+}
+
+func (h *countingSecretHasher) Verify(secret, encoded string) (bool, error) {
+	h.verifyCalls.Add(1)
+	return encoded == "hash:"+secret, nil
+}
+
+type gatedSecretHasher struct {
+	started     chan struct{}
+	release     chan struct{}
+	startOnce   sync.Once
+	hashCalls   atomic.Int32
+	verifyCalls atomic.Int32
+}
+
+func newGatedSecretHasher() *gatedSecretHasher {
+	return &gatedSecretHasher{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (h *gatedSecretHasher) Hash(secret string) (string, error) {
+	h.hashCalls.Add(1)
+	h.startOnce.Do(func() { close(h.started) })
+	<-h.release
+	return "hash:" + secret, nil
+}
+
+func (h *gatedSecretHasher) Verify(secret, encoded string) (bool, error) {
+	h.verifyCalls.Add(1)
+	return encoded == "hash:"+secret, nil
+}
+
+type eventRecordingHasher struct {
+	events *[]string
+	mutex  *sync.Mutex
+}
+
+func (h eventRecordingHasher) Hash(secret string) (string, error) {
+	h.mutex.Lock()
+	*h.events = append(*h.events, "hash")
+	h.mutex.Unlock()
+	return "hash:" + secret, nil
+}
+
+func (h eventRecordingHasher) Verify(secret, encoded string) (bool, error) {
+	return encoded == "hash:"+secret, nil
+}
+
+func TestRequestPerformsHashingBeforeUserLookup(t *testing.T) {
+	fixture := newVerificationFixture()
+	events := []string{}
+	mutex := &sync.Mutex{}
+	hasher := eventRecordingHasher{events: &events, mutex: mutex}
+	users := &eventRecordingUserRepository{
+		UserRepository: fixture,
+		events:         &events,
+		mutex:          mutex,
+	}
+	service := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+		Users:          users,
+		Challenges:     fixture,
+		Hasher:         hasher,
+		HashLimiter:    identity.NewHashLimiter(2),
+		Sender:         &recordingVerificationSender{},
+		RequestLimiter: allowAllLimiter{},
+		ConfirmLimiter: allowAllLimiter{},
+		Now:            func() time.Time { return fixture.now },
+		CodeGenerator:  &fixedCodeGenerator{codes: []string{"012345"}},
+	})
+
+	if err := service.Request(context.Background(), identity.RequestEmailVerificationInput{
+		Email:    "missing@example.com",
+		ClientIP: "203.0.113.10",
+	}); err != nil {
+		t.Fatalf("Request() error = %v", err)
+	}
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	if got := strings.Join(events, ","); got != "hash,lookup" {
+		t.Errorf("event order = %q, want hash,lookup", got)
+	}
+}
+
+type eventRecordingUserRepository struct {
+	identity.UserRepository
+	events *[]string
+	mutex  *sync.Mutex
+}
+
+func (r *eventRecordingUserRepository) FindByEmail(ctx context.Context, email string) (identity.User, error) {
+	r.mutex.Lock()
+	*r.events = append(*r.events, "lookup")
+	r.mutex.Unlock()
+	return r.UserRepository.FindByEmail(ctx, email)
+}
+
+func TestRequestHashesForUnknownAccountsToo(t *testing.T) {
+	tests := []struct {
+		name         string
+		email        string
+		wantMessages int
+	}{
+		{name: "unknown account", email: "missing@example.com", wantMessages: 0},
+		{name: "existing account", email: "person@example.com", wantMessages: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newVerificationFixture()
+			fixture.addUser("person@example.com", false)
+			sender := &recordingVerificationSender{}
+			hasher := &countingSecretHasher{}
+			service := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+				Users:          fixture,
+				Challenges:     fixture,
+				Hasher:         hasher,
+				HashLimiter:    identity.NewHashLimiter(2),
+				Sender:         sender,
+				RequestLimiter: allowAllLimiter{},
+				ConfirmLimiter: allowAllLimiter{},
+				Now:            func() time.Time { return fixture.now },
+				CodeGenerator:  &fixedCodeGenerator{codes: []string{"012345"}},
+			})
+
+			if err := service.Request(context.Background(), identity.RequestEmailVerificationInput{
+				Email:    test.email,
+				ClientIP: "203.0.113.10",
+			}); err != nil {
+				t.Fatalf("Request() error = %v", err)
+			}
+			if calls := hasher.hashCalls.Load(); calls != 1 {
+				t.Errorf("hash calls = %d, want 1", calls)
+			}
+			if messages := len(sender.messages); messages != test.wantMessages {
+				t.Errorf("sent messages = %d, want %d", messages, test.wantMessages)
+			}
+		})
+	}
+}
+
+func TestIssueForUserRejectsWhenHashingIsSaturated(t *testing.T) {
+	fixture := newVerificationFixture()
+	user := fixture.addUser("person@example.com", false)
+	sender := &recordingVerificationSender{}
+	hasher := &countingSecretHasher{}
+	service := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+		Users:          fixture,
+		Challenges:     fixture,
+		Hasher:         hasher,
+		HashLimiter:    denyHashLimiter{},
+		Sender:         sender,
+		RequestLimiter: allowAllLimiter{},
+		ConfirmLimiter: allowAllLimiter{},
+		Now:            func() time.Time { return fixture.now },
+		CodeGenerator:  &fixedCodeGenerator{codes: []string{"012345"}},
+	})
+
+	if err := service.IssueForUser(context.Background(), user); !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("IssueForUser() error = %v, want ErrHashingBusy", err)
+	}
+	if calls := hasher.hashCalls.Load(); calls != 0 {
+		t.Errorf("hash calls = %d, want 0", calls)
+	}
+	if len(sender.messages) != 0 {
+		t.Errorf("sent messages = %d, want 0", len(sender.messages))
+	}
+	if len(fixture.challenges) != 0 {
+		t.Errorf("challenges = %d, want 0", len(fixture.challenges))
+	}
+}
+
+func TestRequestAndConfirmRejectWhenHashingIsSaturated(t *testing.T) {
+	fixture := newVerificationFixture()
+	user := fixture.addUser("person@example.com", false)
+	fixture.challenges = append(fixture.challenges, &verificationRecord{challenge: identity.VerificationChallenge{
+		ID:        "challenge-1",
+		UserID:    user.ID,
+		CodeHash:  "hash:012345",
+		CreatedAt: fixture.now,
+		ExpiresAt: fixture.now.Add(10 * time.Minute),
+	}})
+	sender := &recordingVerificationSender{}
+	hasher := &countingSecretHasher{}
+	service := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+		Users:          fixture,
+		Challenges:     fixture,
+		Hasher:         hasher,
+		HashLimiter:    denyHashLimiter{},
+		Sender:         sender,
+		RequestLimiter: allowAllLimiter{},
+		ConfirmLimiter: allowAllLimiter{},
+		Now:            func() time.Time { return fixture.now },
+		CodeGenerator:  &fixedCodeGenerator{codes: []string{"012345"}},
+	})
+
+	err := service.Request(context.Background(), identity.RequestEmailVerificationInput{
+		Email:    user.Email,
+		ClientIP: "203.0.113.10",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Request() error = %v, want ErrHashingBusy", err)
+	}
+
+	_, err = service.Confirm(context.Background(), identity.ConfirmEmailVerificationInput{
+		Email:    user.Email,
+		Code:     "012345",
+		ClientIP: "203.0.113.10",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Confirm() error = %v, want ErrHashingBusy", err)
+	}
+
+	if calls := hasher.hashCalls.Load(); calls != 0 {
+		t.Errorf("hash calls = %d, want 0", calls)
+	}
+	if calls := hasher.verifyCalls.Load(); calls != 0 {
+		t.Errorf("verify calls = %d, want 0", calls)
+	}
+	if attempts := fixture.challenges[0].challenge.Attempts; attempts != 0 {
+		t.Errorf("attempts = %d, want 0", attempts)
+	}
+	if fixture.challenges[0].consumed {
+		t.Error("challenge was consumed while hashing was saturated")
+	}
+	if len(sender.messages) != 0 {
+		t.Errorf("sent messages = %d, want 0", len(sender.messages))
+	}
+}
+
+func TestRegistrationAndVerificationShareHashLimit(t *testing.T) {
+	fixture := newVerificationFixture()
+	user := fixture.addUser("person@example.com", false)
+	fixture.challenges = append(fixture.challenges, &verificationRecord{challenge: identity.VerificationChallenge{
+		ID:        "challenge-1",
+		UserID:    user.ID,
+		CodeHash:  "hash:012345",
+		CreatedAt: fixture.now,
+		ExpiresAt: fixture.now.Add(10 * time.Minute),
+	}})
+	hasher := newGatedSecretHasher()
+	limiter := identity.NewHashLimiter(1)
+	service := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+		Users:          fixture,
+		Challenges:     fixture,
+		Hasher:         hasher,
+		HashLimiter:    limiter,
+		Sender:         &recordingVerificationSender{},
+		RequestLimiter: allowAllLimiter{},
+		ConfirmLimiter: allowAllLimiter{},
+		Now:            func() time.Time { return fixture.now },
+		CodeGenerator:  &fixedCodeGenerator{codes: []string{"012345"}},
+	})
+	register := identity.NewRegisterUserWithLimiter(fixture, hasher, nil, limiter)
+
+	registerDone := make(chan error, 1)
+	go func() {
+		_, err := register.Execute(context.Background(), identity.RegisterUserInput{
+			Email:    "new@example.com",
+			Password: "correct horse battery",
+		})
+		registerDone <- err
+	}()
+
+	<-hasher.started
+
+	err := service.Request(context.Background(), identity.RequestEmailVerificationInput{
+		Email:    user.Email,
+		ClientIP: "203.0.113.10",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Request() while registration hashes error = %v, want ErrHashingBusy", err)
+	}
+
+	_, err = service.Confirm(context.Background(), identity.ConfirmEmailVerificationInput{
+		Email:    user.Email,
+		Code:     "012345",
+		ClientIP: "203.0.113.10",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Confirm() while registration hashes error = %v, want ErrHashingBusy", err)
+	}
+	if attempts := fixture.challenges[0].challenge.Attempts; attempts != 0 {
+		t.Errorf("attempts = %d, want 0", attempts)
+	}
+	if calls := hasher.verifyCalls.Load(); calls != 0 {
+		t.Errorf("verify calls = %d, want 0", calls)
+	}
+
+	close(hasher.release)
+	if err := <-registerDone; err != nil {
+		t.Fatalf("registration error = %v", err)
 	}
 }

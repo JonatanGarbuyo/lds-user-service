@@ -9,6 +9,7 @@ import (
 var (
 	ErrEmailAlreadyExists      = errors.New("email already exists")
 	ErrRegistrationBusy        = errors.New("registration capacity exhausted")
+	ErrHashingBusy             = errors.New("hashing capacity exhausted")
 	ErrUserNotFound            = errors.New("user not found")
 	ErrChallengeNotFound       = errors.New("verification challenge not found")
 	ErrChallengeInactive       = errors.New("verification challenge is no longer active")

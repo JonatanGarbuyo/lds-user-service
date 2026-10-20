@@ -65,6 +65,8 @@ func (h *EmailVerificationHandler) request(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusAccepted, acceptedResponse{Status: "accepted"})
 	case errors.Is(err, identity.ErrRateLimited):
 		writeRateLimited(w, requestID, err)
+	case errors.Is(err, identity.ErrHashingBusy):
+		writeServiceUnavailable(w, requestID, "Email verification is temporarily unavailable.")
 	case errors.Is(err, identity.ErrVerificationDelivery):
 		h.logger.ErrorContext(r.Context(), "email verification dispatch failed",
 			"request_id", requestID,
@@ -95,6 +97,8 @@ func (h *EmailVerificationHandler) confirm(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, newUserResponse(user))
 	case errors.Is(err, identity.ErrRateLimited):
 		writeRateLimited(w, requestID, err)
+	case errors.Is(err, identity.ErrHashingBusy):
+		writeServiceUnavailable(w, requestID, "Email verification is temporarily unavailable.")
 	case errors.Is(err, identity.ErrInvalidVerificationCode):
 		writeError(w, requestID, &apiError{
 			status:  http.StatusBadRequest,
@@ -121,6 +125,15 @@ func writeRateLimited(w http.ResponseWriter, requestID string, err error) {
 		status:  http.StatusTooManyRequests,
 		code:    "RATE_LIMITED",
 		message: "Too many requests. Try again later.",
+	})
+}
+
+func writeServiceUnavailable(w http.ResponseWriter, requestID, message string) {
+	w.Header().Set("Retry-After", "1")
+	writeError(w, requestID, &apiError{
+		status:  http.StatusServiceUnavailable,
+		code:    "SERVICE_UNAVAILABLE",
+		message: message,
 	})
 }
 

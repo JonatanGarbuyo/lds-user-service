@@ -64,7 +64,7 @@ Reglas relevantes:
 
 - El email se recorta y se normaliza a minúsculas antes de persistirse. La columna tiene una restricción única, por lo que dos registros concurrentes con el mismo email producen un único User y un `409 EMAIL_ALREADY_EXISTS` para el resto.
 - La contraseña debe tener entre 12 y 256 caracteres. Se almacena como hash **Argon2id** (64 MiB, 3 iteraciones, paralelismo 2, salt aleatorio de 16 bytes) en formato PHC; nunca se devuelve ni se registra en logs.
-- El hashing se limita a **2 ejecuciones simultáneas por proceso** para acotar el uso de memoria (2 × 64 MiB). Si ambas están ocupadas, el registro falla rápido con `503 SERVICE_UNAVAILABLE` y `Retry-After: 1`; no se encola trabajo adicional.
+- El hashing Argon2id de contraseñas y códigos de verificación comparte un límite de **2 ejecuciones simultáneas por proceso** para acotar el uso de memoria (2 × 64 MiB). Si ambas están ocupadas, el registro, la solicitud y la confirmación fallan rápido con `503 SERVICE_UNAVAILABLE` y `Retry-After: 1`; no se encola trabajo adicional y una confirmación rechazada no consume intentos.
 - `id` es un UUID estable generado por PostgreSQL, independiente del email.
 - `emailVerified=false` y `status=active` son conceptos independientes.
 - La respuesta no incluye `Set-Cookie` ni `Authorization`, y usa `Cache-Control: no-store`.
@@ -73,7 +73,7 @@ Reglas relevantes:
 
 ## Email Verification
 
-Al registrarse, el servicio genera un código numérico de **6 dígitos**, lo persiste como hash Argon2id y lo envía por el puerto `identity.VerificationEmailSender`. El código tiene **10 minutos** de vigencia, es de **un solo uso**, admite **5 intentos** fallidos y no se expone en respuestas HTTP ni en logs. Un código nuevo invalida el anterior.
+Al registrarse, el servicio genera un código numérico de **6 dígitos**, lo persiste como hash Argon2id (sujeto al límite compartido de hashing descrito arriba) y lo envía por el puerto `identity.VerificationEmailSender`. El código tiene **10 minutos** de vigencia, es de **un solo uso**, admite **5 intentos** fallidos y no se expone en respuestas HTTP ni en logs. Un código nuevo invalida el anterior.
 
 El contrato completo está en [`api/openapi.yaml`](api/openapi.yaml). Las operaciones son:
 
@@ -91,12 +91,13 @@ curl -i -X POST http://127.0.0.1:8080/v1/auth/email-verification/confirm \
 
 Reglas relevantes:
 
-- `POST /v1/auth/email-verification/request` responde siempre `202 Accepted` con `{"status":"accepted"}` para un email sintácticamente válido, exista o no la cuenta. `202` no afirma que el correo se haya entregado.
+- `POST /v1/auth/email-verification/request` responde `202 Accepted` con `{"status":"accepted"}` para un email sintácticamente válido, exista o no la cuenta. El hashing del código se ejecuta antes de buscar la cuenta, de modo que el costo dominante sea uniforme y no permita enumerar por tiempo. `202` no afirma que el correo se haya entregado. Si el límite de hashing está saturado, responde `503 SERVICE_UNAVAILABLE` con `Retry-After` sin revelar la existencia de la cuenta.
 - El reenvío tiene una espera mínima de **60 segundos** desde el último código emitido. Dentro de esa ventana la solicitud se acepta pero no se genera ni envía otro código.
 - Un código nuevo invalida el anterior de forma transaccional. Bajo concurrencia, sólo un código puede consumirse y un código anterior no puede confirmar después de que se emitió uno nuevo.
 - `POST /v1/auth/email-verification/confirm` responde `400 INVALID_VERIFICATION_CODE` de forma genérica para códigos incorrectos, vencidos, consumidos, invalidados o agotados, sin revelar si la cuenta existe.
 - La confirmación actualiza `emailVerified=true` sin modificar `status` y **sin crear cookie, Bearer ni sesión**.
 - Los límites por IP son **10 solicitudes/minuto** en `request` y **20 intentos/minuto** en `confirm`, por proceso. Se devuelve `429 RATE_LIMITED` con `Retry-After` cuando corresponde.
+- Cuando el límite compartido de Argon2 está saturado, `confirm` responde `503 SERVICE_UNAVAILABLE` con `Retry-After: 1` antes de verificar el código, por lo que no consume intentos.
 - Si el adaptador de correo falla, el registro sigue creando la cuenta (`201`) pero registra el fallo y elimina el desafío no entregado; no se afirma que el correo se haya enviado. La solicitud posterior responde `202` genérico y registra el fallo. El usuario puede reintentar el reenvío.
 
 ### Adaptador de correo de desarrollo
