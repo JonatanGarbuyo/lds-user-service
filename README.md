@@ -111,7 +111,9 @@ docker compose exec app tail -n 1 /tmp/lds-user-service-mail/outbox.jsonl
 tail -n 1 /tmp/lds-user-service-mail/outbox.jsonl
 ```
 
-Cada línea contiene `to`, `subject`, `code`, `expiresAt` y `sentAt`. El adaptador es **sólo para desarrollo**; un transporte de producción (por ejemplo SMTP) queda fuera del alcance de este ticket y deberá implementar el mismo puerto.
+Cada línea contiene `to`, `subject`, `code`, `expiresAt` y `sentAt`. El archivo se fuerza a permisos `0600` también si ya existía con permisos más amplios.
+
+El adaptador es **sólo para desarrollo**: el servicio se niega a arrancar cuando `APP_ENV` no es `development`, en lugar de escribir códigos en disco en otros entornos. Un transporte de producción (por ejemplo SMTP) queda fuera del alcance de este ticket y deberá implementar el mismo puerto.
 
 Para desarrollo con logs en primer plano:
 
@@ -133,7 +135,7 @@ make down
 
 | Variable | Por defecto | Uso |
 |---|---|---|
-| `APP_ENV` | `development` | Entorno lógico de la aplicación. |
+| `APP_ENV` | `development` | Entorno lógico de la aplicación. El adaptador de correo de desarrollo sólo se permite con `development`; otros valores fallan al arrancar hasta implementar un transporte de producción. |
 | `HTTP_ADDR` | `:8080` | Dirección de escucha dentro del contenedor. |
 | `DATABASE_URL` | — (obligatoria) | URL `postgres://` o `postgresql://` de PostgreSQL. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` o `error`. |

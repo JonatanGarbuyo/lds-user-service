@@ -579,6 +579,43 @@ func TestVerificationRateLimitsPerIP(t *testing.T) {
 	})
 }
 
+func TestVerificationRateLimitsMatchConfiguredThresholds(t *testing.T) {
+	server := newVerificationIntegrationServerWith(t, nil, 10, 20)
+	email := uniqueIntegrationEmail(t)
+
+	for attempt := 1; attempt <= 10; attempt++ {
+		if status, _, body := requestVerificationCode(t, server, email); status != http.StatusAccepted {
+			t.Fatalf("request %d status = %d, want %d; body = %s", attempt, status, http.StatusAccepted, body)
+		}
+	}
+	status, headers, body := requestVerificationCode(t, server, email)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("request 11 status = %d, want %d; body = %s", status, http.StatusTooManyRequests, body)
+	}
+	if headers.Get("Retry-After") == "" {
+		t.Error("request Retry-After is empty")
+	}
+	if response := decodeError(t, body); response.Error.Code != "RATE_LIMITED" {
+		t.Errorf("request error.code = %q, want RATE_LIMITED", response.Error.Code)
+	}
+
+	for attempt := 1; attempt <= 20; attempt++ {
+		if status, _, body := confirmVerificationCode(t, server, email, "000000"); status != http.StatusBadRequest {
+			t.Fatalf("confirm %d status = %d, want %d; body = %s", attempt, status, http.StatusBadRequest, body)
+		}
+	}
+	status, headers, body = confirmVerificationCode(t, server, email, "000000")
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("confirm 21 status = %d, want %d; body = %s", status, http.StatusTooManyRequests, body)
+	}
+	if headers.Get("Retry-After") == "" {
+		t.Error("confirm Retry-After is empty")
+	}
+	if response := decodeError(t, body); response.Error.Code != "RATE_LIMITED" {
+		t.Errorf("confirm error.code = %q, want RATE_LIMITED", response.Error.Code)
+	}
+}
+
 func TestVerificationResponsesAreNotCacheable(t *testing.T) {
 	server := newVerificationIntegrationServer(t)
 	email := uniqueIntegrationEmail(t)

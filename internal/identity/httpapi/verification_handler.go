@@ -48,9 +48,7 @@ type acceptedResponse struct {
 }
 
 func (h *EmailVerificationHandler) request(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFrom(r)
-	w.Header().Set(requestIDHeader, requestID)
-	w.Header().Set("Cache-Control", "no-store")
+	requestID := beginAPIResponse(w, r)
 
 	var request emailVerificationRequest
 	if failure := decodeJSONBody(w, r, &request); failure != nil {
@@ -79,9 +77,7 @@ func (h *EmailVerificationHandler) request(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *EmailVerificationHandler) confirm(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFrom(r)
-	w.Header().Set(requestIDHeader, requestID)
-	w.Header().Set("Cache-Control", "no-store")
+	requestID := beginAPIResponse(w, r)
 
 	var request emailVerificationConfirmRequest
 	if failure := decodeJSONBody(w, r, &request); failure != nil {

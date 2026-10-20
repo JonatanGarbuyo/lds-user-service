@@ -215,7 +215,8 @@ paths:
 
         A `202` response means the request was accepted; it never asserts that an
         email was delivered. Delivery failures are logged without secrets and do
-        not reveal account existence. Rate limits are applied per client IP.
+        not reveal account existence. Requests are limited to 10 per minute per
+        client IP.
       security: []
       requestBody:
         required: true
@@ -287,7 +288,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Too many verification requests from this client IP.
+          description: More than 10 verification requests per minute from this client IP.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'
@@ -331,8 +332,8 @@ paths:
         Codes are single-use, valid for ten minutes and limited to five failed
         attempts. Expired, consumed, invalidated and exhausted codes all produce
         the same generic `INVALID_VERIFICATION_CODE` error so the endpoint does
-        not reveal whether an account exists. Rate limits are applied per client
-        IP.
+        not reveal whether an account exists. Confirmation attempts are limited to
+        20 per minute per client IP.
       security: []
       requestBody:
         required: true
@@ -415,7 +416,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '429':
-          description: Too many confirmation attempts from this client IP.
+          description: More than 20 confirmation attempts per minute from this client IP.
           headers:
             X-Request-Id:
               $ref: '#/components/headers/XRequestId'

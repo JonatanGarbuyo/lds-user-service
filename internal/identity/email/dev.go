@@ -65,6 +65,10 @@ func (s *DevSender) SendVerificationCode(ctx context.Context, message identity.V
 	if err != nil {
 		return fmt.Errorf("open development mail outbox: %w", err)
 	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("secure development mail outbox: %w", err)
+	}
 
 	if _, err := file.Write(append(payload, '\n')); err != nil {
 		_ = file.Close()

@@ -92,6 +92,36 @@ func TestDevSenderWritesVerificationEmailToPrivateOutbox(t *testing.T) {
 	}
 }
 
+func TestDevSenderRestrictsPermissionsOnExistingOutbox(t *testing.T) {
+	filePath := filepath.Join(t.TempDir(), "mail.jsonl")
+	if err := os.WriteFile(filePath, nil, 0o644); err != nil {
+		t.Fatalf("create outbox: %v", err)
+	}
+	if err := os.Chmod(filePath, 0o644); err != nil {
+		t.Fatalf("set outbox permissions: %v", err)
+	}
+
+	sender, err := identityemail.NewDevSender(filePath)
+	if err != nil {
+		t.Fatalf("NewDevSender() error = %v", err)
+	}
+	if err := sender.SendVerificationCode(context.Background(), identity.VerificationEmail{
+		To:        "person@example.com",
+		Code:      "012345",
+		ExpiresAt: time.Now().Add(10 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SendVerificationCode() error = %v", err)
+	}
+
+	fileInfo, err := os.Stat(filePath)
+	if err != nil {
+		t.Fatalf("stat outbox file: %v", err)
+	}
+	if permission := fileInfo.Mode().Perm(); permission != 0o600 {
+		t.Errorf("outbox file permissions = %o, want 600", permission)
+	}
+}
+
 func TestDevSenderAppendsMultipleMessages(t *testing.T) {
 	filePath := filepath.Join(t.TempDir(), "mail.jsonl")
 	sender, err := identityemail.NewDevSender(filePath)

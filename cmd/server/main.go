@@ -33,6 +33,10 @@ func run() error {
 		return err
 	}
 
+	if cfg.AppEnv != "development" {
+		return fmt.Errorf("development email sender is only supported when APP_ENV=development")
+	}
+
 	logger := newLogger(cfg.LogLevel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

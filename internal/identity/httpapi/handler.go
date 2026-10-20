@@ -45,9 +45,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestID := requestIDFrom(r)
-	w.Header().Set(requestIDHeader, requestID)
-	w.Header().Set("Cache-Control", "no-store")
+	requestID := beginAPIResponse(w, r)
 
 	input, failure := decodeRegisterRequest(w, r)
 	if failure != nil {
@@ -248,6 +246,13 @@ func writeError(w http.ResponseWriter, requestID string, failure *apiError) {
 			Fields:    failure.fields,
 		},
 	})
+}
+
+func beginAPIResponse(w http.ResponseWriter, r *http.Request) string {
+	requestID := requestIDFrom(r)
+	w.Header().Set(requestIDHeader, requestID)
+	w.Header().Set("Cache-Control", "no-store")
+	return requestID
 }
 
 func requestIDFrom(r *http.Request) string {
