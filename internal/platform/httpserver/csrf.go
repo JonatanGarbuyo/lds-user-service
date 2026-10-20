@@ -36,18 +36,21 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		if !requestOriginAllowed(r, c.allowed) {
-			writeSecurityError(w, r, http.StatusForbidden, "FORBIDDEN", "Request origin is not allowed.")
-			return
-		}
-
-		if _, err := r.Cookie(c.sessionCookieName); err == nil {
+		_, sessionErr := r.Cookie(c.sessionCookieName)
+		if sessionErr == nil {
+			if !requestOriginAllowed(r, c.allowed) {
+				writeSecurityError(w, r, http.StatusForbidden, "FORBIDDEN", "Request origin is not allowed.")
+				return
+			}
 			cookie, err := r.Cookie(c.cookieName)
 			header := r.Header.Get("X-CSRF-Token")
 			if err != nil || header == "" || subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(header)) != 1 {
 				writeSecurityError(w, r, http.StatusForbidden, "FORBIDDEN", "CSRF token is missing or invalid.")
 				return
 			}
+		} else if !requestOriginAllowedOrAbsent(r, c.allowed) {
+			writeSecurityError(w, r, http.StatusForbidden, "FORBIDDEN", "Request origin is not allowed.")
+			return
 		}
 
 		next.ServeHTTP(w, r)
@@ -55,9 +58,6 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 }
 
 func (c *CSRF) AllowRequestOrigin(r *http.Request) bool {
-	if r.Header.Get("Origin") == "" && r.Header.Get("Referer") == "" {
-		return false
-	}
 	return requestOriginAllowed(r, c.allowed)
 }
 
@@ -81,20 +81,24 @@ func (c *CSRF) Issue(w http.ResponseWriter) (string, error) {
 func requestOriginAllowed(r *http.Request, allowed map[string]struct{}) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		referer := r.Header.Get("Referer")
+		if referer == "" {
 			return false
 		}
-		if referer := r.Header.Get("Referer"); referer != "" {
-			parsed, err := url.Parse(referer)
-			if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-				return false
-			}
-			origin = parsed.Scheme + "://" + parsed.Host
-		} else {
-			return true
+		parsed, err := url.Parse(referer)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return false
 		}
+		origin = parsed.Scheme + "://" + parsed.Host
 	}
 	return originAllowed(r, origin, allowed)
+}
+
+func requestOriginAllowedOrAbsent(r *http.Request, allowed map[string]struct{}) bool {
+	if r.Header.Get("Origin") == "" && r.Header.Get("Referer") == "" {
+		return r.Header.Get("Sec-Fetch-Site") != "cross-site"
+	}
+	return requestOriginAllowed(r, allowed)
 }
 
 func originAllowed(r *http.Request, origin string, allowed map[string]struct{}) bool {

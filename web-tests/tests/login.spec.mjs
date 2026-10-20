@@ -112,6 +112,7 @@ test('public editorial HTML remains available without authentication', async ({ 
   const response = await page.goto('/editorial.html');
 
   expect(response.status()).toBe(200);
+  expect(response.headers()['cache-control']).toBe('public, max-age=60');
   await expect(page.getByRole('heading', { name: 'Public editorial' })).toBeVisible();
   await expect(page.getByText('available without a session or Reader State snapshot')).toBeVisible();
   expect(await context.cookies()).toEqual([]);

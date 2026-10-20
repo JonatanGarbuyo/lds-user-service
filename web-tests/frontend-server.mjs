@@ -23,7 +23,7 @@ createServer(async (request, response) => {
     const body = await readFile(path);
     response.writeHead(200, {
       'Content-Type': contentTypes[extname(path)] ?? 'application/octet-stream',
-      'Cache-Control': 'no-store'
+      'Cache-Control': name === 'editorial.html' ? 'public, max-age=60' : 'no-store'
     });
     response.end(body);
   } catch {

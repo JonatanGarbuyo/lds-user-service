@@ -93,6 +93,39 @@ func TestCSRFRejectsUnsafeRequestsFromUnknownOrigins(t *testing.T) {
 	}
 }
 
+func TestCSRFRejectsSessionMutationsWithoutOriginEvidence(t *testing.T) {
+	middleware := httpserver.NewCSRF([]string{"https://app.example.com"}, "lds_session")
+	handler := middleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("session mutation without browser-origin evidence reached the handler")
+	}))
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/sessions/revoke-others", nil)
+	request.AddCookie(&http.Cookie{Name: "lds_session", Value: "opaque-secret"})
+	request.AddCookie(&http.Cookie{Name: "lds_csrf", Value: "csrf-token"})
+	request.Header.Set("X-CSRF-Token", "csrf-token")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", recorder.Code)
+	}
+}
+
+func TestCSRFAllowsPublicMutationsWithoutOriginEvidence(t *testing.T) {
+	middleware := httpserver.NewCSRF([]string{"https://app.example.com"}, "lds_session")
+	handler := middleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/users", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", recorder.Code)
+	}
+}
+
 func TestCSRFAllowsSafeRequestsWithoutOrigin(t *testing.T) {
 	middleware := httpserver.NewCSRF(nil, "lds_session")
 	handler := middleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
