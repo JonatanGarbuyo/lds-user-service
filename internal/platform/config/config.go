@@ -69,7 +69,7 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		SessionCookieName:           valueOrDefault(getenv, "SESSION_COOKIE_NAME", defaultSessionCookieName),
 		SessionIdleTTL:              defaultSessionIdleTTL,
 		SessionAbsoluteTTL:          defaultSessionAbsoluteTTL,
-		CORSAllowedOrigins:          list(getenv("CORS_ALLOWED_ORIGINS")),
+		CORSAllowedOrigins:          parseCommaSeparatedOrigins(getenv("CORS_ALLOWED_ORIGINS")),
 		ReaderStateIssuer:           valueOrDefault(getenv, "READER_STATE_ISSUER", defaultReaderStateIssuer),
 		ReaderStateAudience:         valueOrDefault(getenv, "READER_STATE_AUDIENCE", defaultReaderStateAudience),
 		ReaderStateTTL:              defaultReaderStateTTL,
@@ -179,7 +179,7 @@ func validCookieName(name string) bool {
 	return true
 }
 
-func list(value string) []string {
+func parseCommaSeparatedOrigins(value string) []string {
 	if value == "" {
 		return nil
 	}

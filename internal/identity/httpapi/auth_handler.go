@@ -57,7 +57,7 @@ func NewAuth(
 
 func (h *AuthHandler) Register(mux *http.ServeMux) {
 	mux.Handle("POST /v1/auth/login", http.HandlerFunc(h.loginHandler))
-	mux.Handle("GET /v1/users/me", http.HandlerFunc(h.me))
+	mux.Handle("GET /v1/users/me", http.HandlerFunc(h.currentUserHandler))
 }
 
 type loginRequest struct {
@@ -175,7 +175,7 @@ func (h *AuthHandler) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *AuthHandler) me(w http.ResponseWriter, r *http.Request) {
+func (h *AuthHandler) currentUserHandler(w http.ResponseWriter, r *http.Request) {
 	requestID := beginAPIResponse(w, r)
 
 	secret, ok := h.cookie.Read(r)
