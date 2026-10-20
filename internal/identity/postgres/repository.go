@@ -21,6 +21,10 @@ const (
 		SELECT id::text, email, email_verified, status, created_at, updated_at
 		FROM users
 		WHERE email = $1`
+	findUserCredentialsByEmailQuery = `
+		SELECT id::text, email, email_verified, status, created_at, updated_at, password_hash
+		FROM users
+		WHERE email = $1`
 	uniqueViolationCode   = "23505"
 	emailUniqueConstraint = "users_email_key"
 )
@@ -52,6 +56,43 @@ func (r *Repository) FindByEmail(ctx context.Context, email string) (identity.Us
 			return identity.User{}, identity.ErrUserNotFound
 		}
 		return identity.User{}, fmt.Errorf("find user by email: %w", err)
+	}
+	return user, nil
+}
+
+func (r *Repository) FindCredentialsByEmail(ctx context.Context, email string) (identity.UserCredentials, error) {
+	var (
+		credentials identity.UserCredentials
+		status      string
+	)
+	err := r.pool.QueryRow(ctx, findUserCredentialsByEmailQuery, email).Scan(
+		&credentials.User.ID,
+		&credentials.User.Email,
+		&credentials.User.EmailVerified,
+		&status,
+		&credentials.User.CreatedAt,
+		&credentials.User.UpdatedAt,
+		&credentials.PasswordHash,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.UserCredentials{}, identity.ErrUserNotFound
+		}
+		return identity.UserCredentials{}, fmt.Errorf("find user credentials by email: %w", err)
+	}
+	credentials.User.Status = identity.Status(status)
+	credentials.User.CreatedAt = credentials.User.CreatedAt.UTC()
+	credentials.User.UpdatedAt = credentials.User.UpdatedAt.UTC()
+	return credentials, nil
+}
+
+func (r *Repository) FindByID(ctx context.Context, userID string) (identity.User, error) {
+	user, err := scanUser(r.pool.QueryRow(ctx, findUserByIDQuery, userID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.User{}, identity.ErrUserNotFound
+		}
+		return identity.User{}, fmt.Errorf("find user by id: %w", err)
 	}
 	return user, nil
 }

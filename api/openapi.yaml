@@ -5,13 +5,17 @@ info:
   description: |
     Public HTTP contract for the LDS User Service.
 
-    Version 1 currently covers User registration and Email Verification. Login,
-    sessions, password recovery, email change and administrative operations are
-    outside this contract until their respective tickets are implemented.
+    Version 1 currently covers User registration, Email Verification, web login
+    with an opaque cookie session, the authenticated current User and the public
+    Reader State JWKS. Bearer sessions, logout, password recovery, email change
+    and administrative operations are outside this contract until their
+    respective tickets are implemented.
 
     Registration and Email Verification never create a cookie, Bearer credential
-    or session. Verification codes are six digits, single-use, valid for ten
-    minutes, limited to five attempts and subject to a 60-second resend cooldown.
+    or session. Web login creates an opaque server-side session delivered only in
+    a host-only `Secure`/`HttpOnly` cookie. `readerState.signedSnapshot` is a
+    signed JWT intended exclusively for presentation: it never authenticates or
+    authorizes a protected operation.
 
     Errors use a stable envelope with `error.code`, `error.message`,
     `error.requestId` and optional per-field messages in `error.fields`.
@@ -23,6 +27,10 @@ tags:
     description: User identity lifecycle.
   - name: Email Verification
     description: Prove control of an email address without creating a session.
+  - name: Authentication
+    description: Start a web session with an opaque cookie.
+  - name: Reader State
+    description: Public keys for verifying signed presentation snapshots. They never authorize operations.
 paths:
   /v1/users:
     post:
@@ -197,6 +205,296 @@ paths:
                       code: SERVICE_UNAVAILABLE
                       message: Registration is temporarily unavailable.
                       requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+  /v1/auth/login:
+    post:
+      tags:
+        - Authentication
+      operationId: loginWithEmail
+      summary: Start a web session with email and password
+      description: |
+        Validates the password, the account status and the configured email
+        verification policy. On success it persists an opaque web session and
+        delivers the session secret **only** in a host-only cookie with `Secure`,
+        `HttpOnly` and `SameSite=Lax`. The JSON body never contains the session
+        secret.
+
+        The response also includes the public User, a summary of the session and
+        `readerState.signedSnapshot`, a signed JWT for presentation only. The
+        snapshot never authenticates or authorizes a protected endpoint; only the
+        cookie does. A readable `lds_csrf` cookie and `csrfToken` are issued for
+        subsequent cookie-authenticated mutations.
+
+        Wrong passwords and unknown emails share `401 INVALID_CREDENTIALS`.
+        Unverified accounts produce `403 EMAIL_NOT_VERIFIED` when
+        `EMAIL_VERIFICATION_REQUIRED=true`. Suspended and deletion-requested
+        accounts produce `403 ACCOUNT_SUSPENDED`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            examples:
+              default:
+                value:
+                  email: person@example.com
+                  password: correct horse battery
+      responses:
+        '200':
+          description: Web session created. The session secret is delivered only in the cookie.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Set-Cookie:
+              $ref: '#/components/headers/SetCookie'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              examples:
+                default:
+                  value:
+                    user:
+                      id: 0f8fad5b-d9cb-469f-a165-70867728950e
+                      email: person@example.com
+                      emailVerified: true
+                      status: active
+                      createdAt: '2026-10-19T12:00:00Z'
+                      updatedAt: '2026-10-19T12:03:00Z'
+                    session:
+                      id: 4a9c7b0e-52f2-4b4f-87e4-2b7bc9ef2c8c
+                      kind: web
+                      current: true
+                      createdAt: '2026-10-19T12:00:00Z'
+                      lastActivityAt: '2026-10-19T12:00:00Z'
+                      expiresAt: '2026-11-18T12:00:00Z'
+                    readerState:
+                      signedSnapshot: eyJhbGciOiJFUzI1NiIsImtpZCI6ImtleS0xIiwidHlwIjoiSldUIn0.eyJpc3MiOiJsZHMtdXNlci1zZXJ2aWNlIn0.c2lnbmF0dXJl
+                      expiresAt: '2026-10-19T12:30:00Z'
+                    csrfToken: 9pLwXQx1tK4Lw9Vf4Qm2sA
+        '400':
+          description: Malformed JSON or invalid field values.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                validation:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request contains invalid fields.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                      fields:
+                        email: must be a valid email address
+        '401':
+          description: Invalid email or password.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCredentials:
+                  value:
+                    error:
+                      code: INVALID_CREDENTIALS
+                      message: Email or password is incorrect.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '403':
+          description: Email verification is required or the account cannot sign in.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                emailNotVerified:
+                  value:
+                    error:
+                      code: EMAIL_NOT_VERIFIED
+                      message: Verify your email before signing in.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                suspended:
+                  value:
+                    error:
+                      code: ACCOUNT_SUSPENDED
+                      message: This account cannot sign in.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                forbiddenOrigin:
+                  value:
+                    error:
+                      code: FORBIDDEN
+                      message: Request origin is not allowed.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '413':
+          description: Request body exceeds the 1 MiB limit.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is not application/json.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many login attempts from this client IP.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Unexpected server failure. No internal details are exposed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Password hashing capacity is temporarily exhausted.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/users/me:
+    get:
+      tags:
+        - Identity
+      operationId: getCurrentUser
+      summary: Get the authenticated User
+      description: |
+        Requires a valid web session cookie. A signed Reader State snapshot or an
+        `Authorization` header never substitutes for the cookie. Missing, expired,
+        revoked or unknown sessions return `401 INVALID_SESSION`.
+      security:
+        - cookieSession: []
+      responses:
+        '200':
+          description: Public model of the authenticated User.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                default:
+                  value:
+                    id: 0f8fad5b-d9cb-469f-a165-70867728950e
+                    email: person@example.com
+                    emailVerified: true
+                    status: active
+                    createdAt: '2026-10-19T12:00:00Z'
+                    updatedAt: '2026-10-19T12:03:00Z'
+        '401':
+          description: The session cookie is missing or no longer valid.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidSession:
+                  value:
+                    error:
+                      code: INVALID_SESSION
+                      message: A valid session is required.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '500':
+          description: Unexpected server failure. No internal details are exposed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/jwks:
+    get:
+      tags:
+        - Reader State
+      operationId: getReaderStateJWKS
+      summary: Public verification keys for Reader State snapshots
+      description: |
+        Publishes public ECDSA P-256 verification keys. These keys are not
+        credentials and cannot be used to sign new snapshots. Clients cache the
+        response and revalidate with `ETag`; an unknown `kid` requires refreshing
+        the key set from this trusted URL.
+      security: []
+      responses:
+        '200':
+          description: Public JWKS.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControlPublic'
+            ETag:
+              $ref: '#/components/headers/ETag'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JWKS'
+        '304':
+          description: The cached key set is still current.
+          headers:
+            ETag:
+              $ref: '#/components/headers/ETag'
   /v1/auth/email-verification/request:
     post:
       tags:
@@ -487,6 +785,12 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 components:
+  securitySchemes:
+    cookieSession:
+      type: apiKey
+      in: cookie
+      name: lds_session
+      description: Opaque host-only web session. The secret is never returned in JSON.
   headers:
     XRequestId:
       description: Request correlation identifier. Echoed when a valid client value is supplied.
@@ -503,6 +807,20 @@ components:
       schema:
         type: string
         example: '30'
+    SetCookie:
+      description: Host-only session and CSRF cookies. The session cookie is HttpOnly and Secure.
+      schema:
+        type: string
+        example: lds_session=opaque; Path=/; HttpOnly; Secure; SameSite=Lax
+    CacheControlPublic:
+      description: Public verification keys may be cached by browsers and intermediaries.
+      schema:
+        type: string
+        const: public, max-age=300
+    ETag:
+      description: Strong validator for conditional JWKS requests.
+      schema:
+        type: string
   schemas:
     RegisterUserRequest:
       type: object
@@ -525,6 +843,143 @@ components:
           writeOnly: true
           description: Password of 12 to 256 characters. It is hashed with Argon2id and never stored or returned in plaintext.
           example: correct horse battery
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email address. Surrounding whitespace is ignored and the value is normalized to lowercase.
+          example: person@example.com
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 256
+          writeOnly: true
+          description: Password used to verify the stored Argon2id hash. It is never stored or returned.
+          example: correct horse battery
+    LoginResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - user
+        - session
+        - readerState
+        - csrfToken
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        session:
+          $ref: '#/components/schemas/SessionSummary'
+        readerState:
+          $ref: '#/components/schemas/ReaderStateSnapshot'
+        csrfToken:
+          type: string
+          description: Double-submit token for subsequent cookie-authenticated mutations. It is not a session credential.
+          example: 9pLwXQx1tK4Lw9Vf4Qm2sA
+    SessionSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - kind
+        - current
+        - createdAt
+        - lastActivityAt
+        - expiresAt
+      properties:
+        id:
+          type: string
+          description: Opaque session identifier. It never contains the session secret.
+          example: 4a9c7b0e-52f2-4b4f-87e4-2b7bc9ef2c8c
+        kind:
+          type: string
+          enum:
+            - web
+          example: web
+        current:
+          type: boolean
+          description: Whether this is the session used by the current request.
+          example: true
+        createdAt:
+          type: string
+          format: date-time
+          example: '2026-10-19T12:00:00Z'
+        lastActivityAt:
+          type: string
+          format: date-time
+          example: '2026-10-19T12:00:00Z'
+        expiresAt:
+          type: string
+          format: date-time
+          description: Effective expiry after applying inactivity and absolute limits.
+          example: '2026-11-18T12:00:00Z'
+    ReaderStateSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - signedSnapshot
+        - expiresAt
+      properties:
+        signedSnapshot:
+          type: string
+          description: Compact signed JWT for presentation only. It never authenticates or authorizes protected operations.
+          example: eyJhbGciOiJFUzI1NiIsImtpZCI6ImtleS0xIiwidHlwIjoiSldUIn0.eyJpc3MiOiJsZHMtdXNlci1zZXJ2aWNlIn0.c2lnbmF0dXJl
+        expiresAt:
+          type: string
+          format: date-time
+          description: Informational expiry. Clients must validate the signed `exp` claim.
+          example: '2026-10-19T12:30:00Z'
+    JWKS:
+      type: object
+      additionalProperties: false
+      required:
+        - keys
+      properties:
+        keys:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/JWK'
+    JWK:
+      type: object
+      additionalProperties: false
+      required:
+        - kty
+        - crv
+        - x
+        - y
+        - alg
+        - use
+        - kid
+      properties:
+        kty:
+          type: string
+          const: EC
+        crv:
+          type: string
+          const: P-256
+        x:
+          type: string
+          description: Base64url-encoded public X coordinate.
+        y:
+          type: string
+          description: Base64url-encoded public Y coordinate.
+        alg:
+          type: string
+          const: ES256
+        use:
+          type: string
+          const: sig
+        kid:
+          type: string
+          description: Key identifier referenced by the JWT header.
     User:
       type: object
       additionalProperties: false
@@ -637,6 +1092,11 @@ components:
             - PAYLOAD_TOO_LARGE
             - SERVICE_UNAVAILABLE
             - INVALID_VERIFICATION_CODE
+            - INVALID_CREDENTIALS
+            - EMAIL_NOT_VERIFIED
+            - ACCOUNT_SUSPENDED
+            - INVALID_SESSION
+            - FORBIDDEN
             - RATE_LIMITED
             - INTERNAL_ERROR
           example: VALIDATION_ERROR

@@ -13,3 +13,8 @@ coverage.out
 .idea/
 .vscode/
 .DS_Store
+
+# Browser test artifacts
+web-tests/node_modules/
+web-tests/test-results/
+web-tests/playwright-report/

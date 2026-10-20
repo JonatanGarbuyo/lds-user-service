@@ -22,7 +22,15 @@ type Server struct {
 	listener   net.Listener
 }
 
+type Options struct {
+	Middleware []func(http.Handler) http.Handler
+}
+
 func New(addr string, pinger Pinger, logger *slog.Logger, register ...func(*http.ServeMux)) *Server {
+	return NewWithOptions(addr, pinger, logger, Options{}, register...)
+}
+
+func NewWithOptions(addr string, pinger Pinger, logger *slog.Logger, options Options, register ...func(*http.ServeMux)) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -34,11 +42,16 @@ func New(addr string, pinger Pinger, logger *slog.Logger, register ...func(*http
 		routes(mux)
 	}
 
+	var handler http.Handler = mux
+	for index := len(options.Middleware) - 1; index >= 0; index-- {
+		handler = options.Middleware[index](handler)
+	}
+
 	return &Server{
 		logger: logger,
 		httpServer: &http.Server{
 			Addr:              addr,
-			Handler:           mux,
+			Handler:           handler,
 			ReadHeaderTimeout: 5 * time.Second,
 		},
 	}

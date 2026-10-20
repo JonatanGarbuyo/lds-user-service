@@ -5,7 +5,7 @@ COMPOSE ?= docker compose
 GOLANGCI_LINT_VERSION ?= v2.15.0
 GOLANGCI_LINT := $(GO) run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-.PHONY: help dev up down clean logs ps run build test test-race test-integration \
+.PHONY: help dev up down clean logs ps run build test test-race test-integration test-browser \
 	lint fmt fmt-check vet migrate migrate-down migrate-version migrate-force ci
 
 help:
@@ -21,6 +21,7 @@ help:
 	@echo "  test              Run unit tests"
 	@echo "  test-race         Run unit tests with the race detector"
 	@echo "  test-integration  Run tests tagged integration against Compose PostgreSQL"
+	@echo "  test-browser      Run Playwright browser tests (needs PostgreSQL; Go or Docker)"
 	@echo "  lint              Run golangci-lint $(GOLANGCI_LINT_VERSION)"
 	@echo "  fmt               Format Go sources with gofmt"
 	@echo "  fmt-check         Fail if any Go source is not formatted"
@@ -66,6 +67,9 @@ test-integration:
 	@set -a; if [ -f .env ]; then . ./.env; fi; set +a; \
 		TEST_DATABASE_URL="$${TEST_DATABASE_URL:-postgres://$${POSTGRES_USER:-lds}:$${POSTGRES_PASSWORD:-lds_dev_password}@localhost:$${POSTGRES_PORT:-5432}/$${POSTGRES_DB:-lds_user_service}?sslmode=disable}" \
 		$(GO) test -tags=integration ./...
+
+test-browser:
+	cd web-tests && npm ci && npx playwright install chromium && npm test
 
 lint:
 	$(GOLANGCI_LINT) run ./...

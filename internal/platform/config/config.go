@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -17,20 +18,37 @@ const (
 	defaultDBMaxConns                = 10
 	defaultEmailVerificationRequired = true
 	defaultMailOutboxFile            = "/tmp/lds-user-service-mail/outbox.jsonl"
+	defaultSessionCookieName         = "lds_session"
+	defaultSessionIdleTTL            = 30 * 24 * time.Hour
+	defaultSessionAbsoluteTTL        = 90 * 24 * time.Hour
+	defaultReaderStateIssuer         = "lds-user-service"
+	defaultReaderStateAudience       = "lds-web"
+	defaultReaderStateTTL            = 30 * time.Minute
 	postgresScheme                   = "postgres"
 	postgresqlScheme                 = "postgresql"
 )
 
 type Config struct {
-	AppEnv                    string
-	HTTPAddr                  string
-	LogLevel                  string
-	DatabaseURL               string
-	ShutdownTimeout           time.Duration
-	DBConnectTimeout          time.Duration
-	DBMaxConns                int32
-	EmailVerificationRequired bool
-	MailOutboxFile            string
+	AppEnv                      string
+	HTTPAddr                    string
+	LogLevel                    string
+	DatabaseURL                 string
+	ShutdownTimeout             time.Duration
+	DBConnectTimeout            time.Duration
+	DBMaxConns                  int32
+	EmailVerificationRequired   bool
+	MailOutboxFile              string
+	SessionCookieName           string
+	SessionIdleTTL              time.Duration
+	SessionAbsoluteTTL          time.Duration
+	CORSAllowedOrigins          []string
+	ReaderStateIssuer           string
+	ReaderStateAudience         string
+	ReaderStateTTL              time.Duration
+	ReaderStatePrivateKey       string
+	ReaderStatePrivateKeyFile   string
+	ReaderStatePreviousKeys     string
+	ReaderStatePreviousKeysFile string
 }
 
 func Load() (Config, error) {
@@ -39,15 +57,26 @@ func Load() (Config, error) {
 
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		AppEnv:                    valueOrDefault(getenv, "APP_ENV", defaultAppEnv),
-		HTTPAddr:                  valueOrDefault(getenv, "HTTP_ADDR", defaultHTTPAddr),
-		LogLevel:                  valueOrDefault(getenv, "LOG_LEVEL", defaultLogLevel),
-		DatabaseURL:               getenv("DATABASE_URL"),
-		ShutdownTimeout:           defaultShutdownTimeout,
-		DBConnectTimeout:          defaultDBConnectTimeout,
-		DBMaxConns:                defaultDBMaxConns,
-		EmailVerificationRequired: defaultEmailVerificationRequired,
-		MailOutboxFile:            valueOrDefault(getenv, "MAIL_OUTBOX_FILE", defaultMailOutboxFile),
+		AppEnv:                      valueOrDefault(getenv, "APP_ENV", defaultAppEnv),
+		HTTPAddr:                    valueOrDefault(getenv, "HTTP_ADDR", defaultHTTPAddr),
+		LogLevel:                    valueOrDefault(getenv, "LOG_LEVEL", defaultLogLevel),
+		DatabaseURL:                 getenv("DATABASE_URL"),
+		ShutdownTimeout:             defaultShutdownTimeout,
+		DBConnectTimeout:            defaultDBConnectTimeout,
+		DBMaxConns:                  defaultDBMaxConns,
+		EmailVerificationRequired:   defaultEmailVerificationRequired,
+		MailOutboxFile:              valueOrDefault(getenv, "MAIL_OUTBOX_FILE", defaultMailOutboxFile),
+		SessionCookieName:           valueOrDefault(getenv, "SESSION_COOKIE_NAME", defaultSessionCookieName),
+		SessionIdleTTL:              defaultSessionIdleTTL,
+		SessionAbsoluteTTL:          defaultSessionAbsoluteTTL,
+		CORSAllowedOrigins:          parseCommaSeparatedOrigins(getenv("CORS_ALLOWED_ORIGINS")),
+		ReaderStateIssuer:           valueOrDefault(getenv, "READER_STATE_ISSUER", defaultReaderStateIssuer),
+		ReaderStateAudience:         valueOrDefault(getenv, "READER_STATE_AUDIENCE", defaultReaderStateAudience),
+		ReaderStateTTL:              defaultReaderStateTTL,
+		ReaderStatePrivateKey:       getenv("READER_STATE_PRIVATE_KEY"),
+		ReaderStatePrivateKeyFile:   getenv("READER_STATE_PRIVATE_KEY_FILE"),
+		ReaderStatePreviousKeys:     getenv("READER_STATE_PREVIOUS_PUBLIC_KEYS"),
+		ReaderStatePreviousKeysFile: getenv("READER_STATE_PREVIOUS_PUBLIC_KEYS_FILE"),
 	}
 
 	var err error
@@ -61,6 +90,15 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.EmailVerificationRequired, err = boolOrDefault(getenv, "EMAIL_VERIFICATION_REQUIRED", defaultEmailVerificationRequired); err != nil {
+		return Config{}, err
+	}
+	if cfg.SessionIdleTTL, err = durationOrDefault(getenv, "SESSION_IDLE_TTL", defaultSessionIdleTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.SessionAbsoluteTTL, err = durationOrDefault(getenv, "SESSION_ABSOLUTE_TTL", defaultSessionAbsoluteTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.ReaderStateTTL, err = durationOrDefault(getenv, "READER_STATE_TTL", defaultReaderStateTTL); err != nil {
 		return Config{}, err
 	}
 
@@ -100,7 +138,59 @@ func validate(cfg Config) error {
 	if cfg.MailOutboxFile == "" {
 		return fmt.Errorf("config: MAIL_OUTBOX_FILE must not be empty")
 	}
+	if !validCookieName(cfg.SessionCookieName) {
+		return fmt.Errorf("config: SESSION_COOKIE_NAME must be a valid cookie name")
+	}
+	if cfg.SessionAbsoluteTTL < cfg.SessionIdleTTL {
+		return fmt.Errorf("config: SESSION_ABSOLUTE_TTL must be greater than or equal to SESSION_IDLE_TTL")
+	}
+	for _, origin := range cfg.CORSAllowedOrigins {
+		parsed, err := url.Parse(origin)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.Path != "" {
+			return fmt.Errorf("config: CORS_ALLOWED_ORIGINS contains an invalid origin %q", origin)
+		}
+		if origin == "*" {
+			return fmt.Errorf("config: CORS_ALLOWED_ORIGINS must list explicit origins, not *")
+		}
+	}
+	if cfg.ReaderStateIssuer == "" || cfg.ReaderStateAudience == "" {
+		return fmt.Errorf("config: READER_STATE_ISSUER and READER_STATE_AUDIENCE must not be empty")
+	}
+	if cfg.ReaderStatePrivateKey == "" && cfg.ReaderStatePrivateKeyFile == "" && cfg.AppEnv != defaultAppEnv {
+		return fmt.Errorf("config: READER_STATE_PRIVATE_KEY or READER_STATE_PRIVATE_KEY_FILE is required outside development")
+	}
 	return nil
+}
+
+func validCookieName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, character := range name {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case character == '-', character == '_', character == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func parseCommaSeparatedOrigins(value string) []string {
+	if value == "" {
+		return nil
+	}
+	values := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			values = append(values, item)
+		}
+	}
+	return values
 }
 
 func valueOrDefault(getenv func(string) string, key, fallback string) string {

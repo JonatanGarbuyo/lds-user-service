@@ -49,6 +49,55 @@ jobs:
       - name: Lint OpenAPI contract
         run: npx --yes @redocly/cli@2.65.0 lint api/openapi.yaml
 
+  browser:
+    name: Browser integration (site and service subdomains)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: lds_user_service
+          POSTGRES_USER: lds
+          POSTGRES_PASSWORD: lds_dev_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lds -d lds_user_service"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://lds:lds_dev_password@127.0.0.1:5432/lds_user_service?sslmode=disable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-tests/package-lock.json
+
+      - name: Install browser test dependencies
+        working-directory: web-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
+
+      - name: Run browser tests
+        working-directory: web-tests
+        run: npm test
+
   migrations:
     name: Migrations against PostgreSQL
     runs-on: ubuntu-latest

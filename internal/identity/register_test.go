@@ -42,6 +42,29 @@ func (r *memoryRepository) FindByEmail(_ context.Context, email string) (identit
 	return user, nil
 }
 
+func (r *memoryRepository) FindCredentialsByEmail(_ context.Context, email string) (identity.UserCredentials, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	user, exists := r.users[email]
+	if !exists {
+		return identity.UserCredentials{}, identity.ErrUserNotFound
+	}
+	return identity.UserCredentials{User: user, PasswordHash: r.passwords[email]}, nil
+}
+
+func (r *memoryRepository) FindByID(_ context.Context, userID string) (identity.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, user := range r.users {
+		if user.ID == userID {
+			return user, nil
+		}
+	}
+	return identity.User{}, identity.ErrUserNotFound
+}
+
 func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (identity.User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

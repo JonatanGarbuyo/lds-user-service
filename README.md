@@ -2,11 +2,11 @@
 
 Servicio independiente de gestión de usuarios para aplicaciones consumidoras. Su núcleo cubre registro, autenticación y recuperación de acceso; puede ampliarse mediante módulos, como suscripciones y comentarios.
 
-## Estado actual: T00 (entorno) + T01 (registro) + T02 (Email Verification)
+## Estado actual: T00 (entorno) + T01 (registro) + T02 (Email Verification) + T03 (login web)
 
-El entorno reproducible del ticket [#28](https://github.com/JonatanGarbuyo/lds-user-service/issues/28) sigue vigente. El ticket [#10](https://github.com/JonatanGarbuyo/lds-user-service/issues/10) incorpora el registro básico de User mediante `POST /v1/users`, con persistencia PostgreSQL y contrato OpenAPI 3.1. El ticket [#11](https://github.com/JonatanGarbuyo/lds-user-service/issues/11) incorpora **Email Verification**: emisión del código al registrarse, envío por un adaptador de correo de desarrollo, solicitud/reenvío, confirmación y límites de abuso.
+El entorno reproducible del ticket [#28](https://github.com/JonatanGarbuyo/lds-user-service/issues/28) sigue vigente. El ticket [#10](https://github.com/JonatanGarbuyo/lds-user-service/issues/10) incorpora el registro básico de User mediante `POST /v1/users`, con persistencia PostgreSQL y contrato OpenAPI 3.1. El ticket [#11](https://github.com/JonatanGarbuyo/lds-user-service/issues/11) incorpora **Email Verification**: emisión del código al registrarse, envío por un adaptador de correo de desarrollo, solicitud/reenvío, confirmación y límites de abuso. El ticket [#12](https://github.com/JonatanGarbuyo/lds-user-service/issues/12) incorpora **login web con sesión opaca y Reader State firmado**: `POST /v1/auth/login`, `GET /v1/users/me`, cookies host-only, CORS/CSRF y `GET /v1/jwks`.
 
-Todavía **no** existen login, logout, sesiones, recuperación de contraseña, cambio de email ni administración. Registrar un User o confirmar un email no crea cookie, Bearer ni sesión. `emailVerified` refleja el control real del email; la política de exigirlo para login se configura con `EMAIL_VERIFICATION_REQUIRED` y su enforcement se implementará en T03.
+Todavía **no** existen logout, sesiones Bearer, recuperación de contraseña, cambio de email ni administración. Registrar un User o confirmar un email no crea cookie, Bearer ni sesión. `emailVerified` refleja el control real del email; `EMAIL_VERIFICATION_REQUIRED` bloquea el login cuando es `true`.
 
 Probes provisionales del entorno:
 
@@ -132,6 +132,36 @@ make down
 
 `.env` no se versiona. `.env.example` contiene únicamente credenciales locales de desarrollo.
 
+## Login web y sesión opaca
+
+`POST /v1/auth/login` valida la contraseña Argon2id, el estado de la cuenta y la política `EMAIL_VERIFICATION_REQUIRED`. Si todo es correcto, crea una sesión web persistida cuyo secreto opaco se entrega **sólo** en una cookie host-only `Secure`, `HttpOnly` y `SameSite=Lax`; el JSON nunca contiene ese secreto. La sesión tiene 30 días de inactividad y un límite absoluto configurable (90 días por defecto). Cada operación autenticada renueva la actividad sin superar el límite absoluto.
+
+```bash
+# Login y almacenamiento de la cookie en un cookie jar local.
+curl -i -c cookies.txt -X POST http://127.0.0.1:8080/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -H 'Origin: http://localhost:4321' \
+  -d '{"email":"person@example.com","password":"correct horse battery"}'
+
+# Perfil autenticado: sólo la cookie válida autoriza la operación.
+curl -i -b cookies.txt http://127.0.0.1:8080/v1/users/me
+
+# Claves públicas para verificar readerState.signedSnapshot (no son credenciales).
+curl -i http://127.0.0.1:8080/v1/jwks
+```
+
+La cookie de sesión se emite hasta el límite absoluto (90 días por defecto), mientras que el servidor rechaza la sesión tras 30 días sin actividad y renueva la actividad en cada operación autenticada. La respuesta `200` incluye `user`, `session` (sin secreto), `readerState.signedSnapshot` y `csrfToken`. El snapshot es un JWT **ES256** firmado con `kid`, pensado exclusivamente para UX: el backend nunca lo acepta como sustituto de la cookie ni usa sus claims para autorizar. Los clientes deben validar firma, algoritmo, `iss`, `aud` y `exp` contra `GET /v1/jwks`.
+
+Reglas relevantes:
+
+- Contraseña incorrecta y email inexistente comparten `401 INVALID_CREDENTIALS`. Una cuenta con email sin verificar responde `403 EMAIL_NOT_VERIFIED` cuando la política está activa; suspendida o en eliminación responde `403 ACCOUNT_SUSPENDED`.
+- La sesión se persiste como hash SHA-256 del secreto; el valor en claro nunca se almacena ni se registra en logs.
+- `GET /v1/users/me` exige la cookie de sesión. Un `signedSnapshot` o un header `Authorization` no autentican.
+- CORS sólo responde a los orígenes explícitos de `CORS_ALLOWED_ORIGINS` con `Access-Control-Allow-Credentials: true` y `Vary: Origin`. Nunca se combina con `*`.
+- Las mutaciones con cookie requieren doble envío CSRF (`lds_csrf` + `X-CSRF-Token`). El login exige evidencia de origen de navegador (`Origin` o `Referer`) y que coincida con un origen permitido o con el host del servicio; un origen ausente o no permitido responde `403 FORBIDDEN` y no crea sesión.
+- `GET /v1/jwks` es público, cacheable (`Cache-Control: public, max-age=300`) y soporta `ETag`/`304`.
+- En desarrollo, si no se configura una clave, se genera una clave ES256 efímera al arrancar. En otros entornos la clave es obligatoria y las claves públicas anteriores pueden mantenerse para rotación.
+
 ## Variables de entorno
 
 | Variable | Por defecto | Uso |
@@ -144,7 +174,18 @@ make down
 | `DB_CONNECT_TIMEOUT` | `5s` | Tiempo máximo para abrir y comprobar la conexión inicial. |
 | `DB_MAX_CONNS` | `10` | Tamaño máximo del pool de conexiones. |
 | `MAIL_OUTBOX_FILE` | `/tmp/lds-user-service-mail/outbox.jsonl` | Archivo JSONL del adaptador de correo de desarrollo. No usar en producción. |
-| `EMAIL_VERIFICATION_REQUIRED` | `true` | Política de verificación para login; su enforcement se implementa en T03. |
+| `EMAIL_VERIFICATION_REQUIRED` | `true` | Si es `true`, el login exige `emailVerified=true`. |
+| `SESSION_COOKIE_NAME` | `lds_session` | Nombre de la cookie de sesión host-only. |
+| `SESSION_IDLE_TTL` | `720h` | Inactividad máxima de una sesión web. |
+| `SESSION_ABSOLUTE_TTL` | `2160h` | Vida absoluta máxima de una sesión web; debe ser ≥ `SESSION_IDLE_TTL`. |
+| `CORS_ALLOWED_ORIGINS` | vacío | Orígenes exactos separados por coma, por ejemplo `https://app.example.com`. Nunca `*` con credenciales. |
+| `READER_STATE_ISSUER` | `lds-user-service` | Claim `iss` del snapshot de Reader State. |
+| `READER_STATE_AUDIENCE` | `lds-web` | Claim `aud` del snapshot de Reader State. |
+| `READER_STATE_TTL` | `30m` | Vigencia informativa del snapshot firmado. |
+| `READER_STATE_PRIVATE_KEY` | vacío | Clave privada ECDSA P-256 en PEM (PKCS#8 o SEC1), inline. |
+| `READER_STATE_PRIVATE_KEY_FILE` | vacío | Archivo con la clave privada PEM. Obligatorio fuera de `development` si no se usa la variable inline. |
+| `READER_STATE_PREVIOUS_PUBLIC_KEYS` | vacío | Claves públicas PEM anteriores para seguir verificando snapshots durante la rotación. |
+| `READER_STATE_PREVIOUS_PUBLIC_KEYS_FILE` | vacío | Archivo con una o más claves públicas PEM anteriores. |
 | `HTTP_PORT` | `8080` | Puerto del host publicado por Compose. |
 | `POSTGRES_DB` | `lds_user_service` | Base de datos de desarrollo. |
 | `POSTGRES_USER` | `lds` | Usuario de PostgreSQL de desarrollo. |
@@ -204,13 +245,16 @@ Las migraciones no se ejecutan automáticamente al arrancar el servidor ni al ha
 make test
 make test-race
 make test-integration   # espera PostgreSQL healthy y ejecuta tests con -tags=integration
+make test-browser       # Playwright: sitio y servicio en subdominios de lds.test
 make fmt-check
 make lint
 ```
 
-Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP, el hasher Argon2id, la emisión/confirmación de Email Verification, el generador de códigos, el adaptador de correo de desarrollo y el rate limiter en memoria. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: persistencia, normalización, inputs inválidos, duplicados, concurrencia, saturación del hashing, reinicio del servicio, ausencia de credenciales, emisión y envío al registrarse, solicitud/reenvío, cooldown, invalidación del código anterior, confirmación, códigos incorrectos/consumidos/vencidos/agotados, fallos de correo, antienumeración, límites por IP y concurrencia de confirmación/reenvío.
+Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del servidor HTTP, el caso de uso de registro, las validaciones, el handler HTTP, el hasher Argon2id, la emisión/confirmación de Email Verification, el generador de códigos, el adaptador de correo de desarrollo, el rate limiter en memoria, el servicio de sesiones opacas, cookies host-only, CORS, CSRF, firma/verificación ES256, JWKS y rotación de claves. Los tests de integración aplican las migraciones y ejercitan el flujo HTTP completo contra PostgreSQL real: registro, verificación, login, cookie, `/v1/users/me`, persistencia de sesión tras reinicio, revocación/expiración, códigos de error, CORS/CSRF, JWKS, firma del snapshot, normalización, duplicados, concurrencia, saturación del hashing, antienumeración y límites por IP.
 
 `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
+
+`make test-browser` instala Playwright y ejecuta un navegador Chromium real con el sitio en `app.lds.test:4173` y el servicio en `api.lds.test:8090`. El test registra y verifica un User, hace login desde el sitio mediante `fetch(..., { credentials: 'include' })`, comprueba que la cookie `lds_session` es host-only de `api.lds.test`, `HttpOnly`, `Secure` y `SameSite=Lax`, que JavaScript del sitio no puede leerla, que `/v1/users/me` depende sólo de la cookie y que el snapshot ES256 verifica contra `/v1/jwks`. También comprueba que el HTML editorial público carga sin cookies. Requiere PostgreSQL migrado; si no hay Go en el host, el runner usa Docker para el servicio. Los hosts `*.lds.test` se resuelven a `127.0.0.1` sólo dentro del navegador de pruebas.
 
 ## CI
 
@@ -218,7 +262,8 @@ Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del s
 
 1. `go build ./...`, `go vet ./...`, comprobación de `gofmt`, `go test -race ./...`, golangci-lint `v2.15.0` y validación del contrato con Redocly CLI.
 2. Aplicación, consulta, rollback y reaplicación de migraciones contra un PostgreSQL 17 real.
-3. Smoke test de Docker Compose: arranque, espera de `/readyz`, migraciones, healthcheck del contenedor y limpieza de volúmenes.
+3. Browser integration con Playwright: sitio y servicio bajo subdominios de un dominio registrable común, cookie host-only, CORS con credenciales, `/v1/users/me`, verificación JWKS y HTML editorial sin autenticación.
+4. Smoke test de Docker Compose: arranque, espera de `/readyz`, migraciones, healthcheck del contenedor y limpieza de volúmenes.
 
 Para reproducirlo localmente:
 
@@ -240,20 +285,26 @@ make clean
 api/openapi.yaml                     contrato HTTP OpenAPI 3.1
 cmd/server/                          punto de entrada y composición de dependencias
 cmd/migrate/                         CLI de migraciones
-internal/identity/                   dominio, registro y Email Verification
+internal/identity/                   dominio, registro, Email Verification y login
 internal/identity/email/             adaptador de correo de desarrollo (outbox JSONL)
 internal/identity/password/          adaptador Argon2id
 internal/identity/postgres/          adaptadores PostgreSQL de UserRepository y EmailVerificationRepository
-internal/identity/httpapi/           transporte HTTP de registro y verificación
+internal/identity/httpapi/           transporte HTTP de registro, verificación, login y /users/me
+internal/sessions/                   sesiones opacas y servicio de sesión (sin HTTP)
+internal/sessions/httpapi/           adaptador de cookie host-only
+internal/sessions/postgres/          adaptador PostgreSQL de SessionRepository
+internal/readerstate/                firma ES256, verificación, JWKS y rotación de claves
+internal/readerstate/httpapi/        endpoint público GET /v1/jwks
 internal/platform/config/            carga y validación de configuración
-internal/platform/httpserver/        transporte HTTP y ciclo de vida
+internal/platform/httpserver/        transporte HTTP, ciclo de vida, CORS y CSRF
 internal/platform/postgres/          pool PostgreSQL compartido (pgx)
 internal/platform/ratelimit/         rate limiter en memoria por proceso
 migrations/                          migraciones versionadas y runner embebido
 docs/adr/                            decisiones de arquitectura
+web-tests/                           Playwright: sitio/servicio en subdominios y HTML público
 ```
 
-La infraestructura transversal vive bajo `internal/platform/`. `internal/identity` contiene el dominio y el caso de uso sin importar HTTP ni PostgreSQL; los adaptadores concretos implementan el puerto `identity.UserRepository` y se componen en `cmd/server`. La estructura por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md).
+La infraestructura transversal vive bajo `internal/platform/`. `internal/identity` contiene el dominio y los casos de uso sin importar PostgreSQL; los adaptadores concretos implementan los puertos de cada feature y se componen en `cmd/server`. La estructura por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md). El Reader State vive en su propia feature y nunca participa de la autorización.
 
 ## Troubleshooting
 

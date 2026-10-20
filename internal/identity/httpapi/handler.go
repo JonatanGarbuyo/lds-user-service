@@ -2,26 +2,22 @@ package httpapi
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"mime"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
 )
 
 const (
-	maxBodyBytes    = 1 << 20
-	maxRequestID    = 128
-	jsonMediaType   = "application/json"
-	requestIDHeader = "X-Request-Id"
+	maxBodyBytes  = 1 << 20
+	jsonMediaType = "application/json"
 )
 
 type UserRegistrar interface {
@@ -244,41 +240,7 @@ func writeError(w http.ResponseWriter, requestID string, failure *apiError) {
 }
 
 func beginAPIResponse(w http.ResponseWriter, r *http.Request) string {
-	requestID := requestIDFrom(r)
-	w.Header().Set(requestIDHeader, requestID)
+	requestID := httpserver.SetRequestID(w, r)
 	w.Header().Set("Cache-Control", "no-store")
 	return requestID
-}
-
-func requestIDFrom(r *http.Request) string {
-	requestID := r.Header.Get(requestIDHeader)
-	if isSafeRequestID(requestID) {
-		return requestID
-	}
-	return newRequestID()
-}
-
-func isSafeRequestID(requestID string) bool {
-	if requestID == "" || len(requestID) > maxRequestID {
-		return false
-	}
-	for _, character := range requestID {
-		switch {
-		case character >= 'a' && character <= 'z':
-		case character >= 'A' && character <= 'Z':
-		case character >= '0' && character <= '9':
-		case character == '-', character == '_', character == '.':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func newRequestID() string {
-	var buffer [16]byte
-	if _, err := rand.Read(buffer[:]); err != nil {
-		return strconv.FormatInt(time.Now().UnixNano(), 36)
-	}
-	return hex.EncodeToString(buffer[:])
 }
