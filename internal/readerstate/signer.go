@@ -2,6 +2,7 @@ package readerstate
 
 import (
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -79,7 +80,7 @@ func NewSigner(active *ecdsa.PrivateKey, previous []*ecdsa.PublicKey, options Op
 	if active == nil {
 		return nil, fmt.Errorf("%w: active private key is required", ErrUnsupportedKey)
 	}
-	if active.Curve != ellipticP256() {
+	if active.Curve != elliptic.P256() {
 		return nil, fmt.Errorf("%w: active key must use P-256", ErrUnsupportedKey)
 	}
 	if options.Issuer == "" || options.Audience == "" {
@@ -110,7 +111,7 @@ func NewSigner(active *ecdsa.PrivateKey, previous []*ecdsa.PublicKey, options Op
 		if publicKey == nil {
 			continue
 		}
-		if publicKey.Curve != ellipticP256() {
+		if publicKey.Curve != elliptic.P256() {
 			return nil, fmt.Errorf("%w: previous key must use P-256", ErrUnsupportedKey)
 		}
 		signer.addVerificationKey(keyID(publicKey), publicKey)

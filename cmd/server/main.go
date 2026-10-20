@@ -22,6 +22,7 @@ import (
 	"github.com/JonatanGarbuyo/lds-user-service/internal/readerstate"
 	readerstatehttp "github.com/JonatanGarbuyo/lds-user-service/internal/readerstate/httpapi"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionshttp "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/httpapi"
 	sessionspostgres "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/postgres"
 )
 
@@ -114,7 +115,7 @@ func run() error {
 		return fmt.Errorf("configure login: %w", err)
 	}
 	currentUser := identity.NewCurrentUser(userRepository, sessionService)
-	cookie := sessions.Cookie{
+	cookie := sessionshttp.Cookie{
 		Name:     cfg.SessionCookieName,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,

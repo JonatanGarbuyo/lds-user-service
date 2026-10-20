@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>LDS reader</title>
+  </head>
+  <body>
+    <main>
+      <h1>Reader sign in</h1>
+      <form id="login-form">
+        <label>Email <input id="email" name="email" type="email" autocomplete="username" required></label>
+        <label>Password <input id="password" name="password" type="password" autocomplete="current-password" required></label>
+        <button id="login" type="submit">Sign in</button>
+      </form>
+      <p id="status" role="status"></p>
+      <pre id="output"></pre>
+      <section aria-labelledby="editorial-heading">
+        <h2 id="editorial-heading">Public editorial</h2>
+        <p>Editorial HTML is cacheable and does not depend on authentication.</p>
+      </section>
+    </main>
+    <script>
+      const api = 'http://api.lds.test:8090';
+      window.__loginResult = null;
+
+      document.querySelector('#login-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const response = await fetch(`${api}/v1/auth/login`, {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: document.querySelector('#email').value,
+            password: document.querySelector('#password').value
+          })
+        });
+        const body = await response.json();
+        window.__loginResult = { status: response.status, body };
+        document.querySelector('#status').textContent = String(response.status);
+        document.querySelector('#output').textContent = JSON.stringify(body, null, 2);
+      });
+
+      window.fetchMe = async () => {
+        const response = await fetch(`${api}/v1/users/me`, { credentials: 'include' });
+        return { status: response.status, body: await response.json() };
+      };
+
+      window.fetchJWKS = async () => {
+        const response = await fetch(`${api}/v1/jwks`);
+        return { status: response.status, body: await response.json() };
+      };
+    </script>
+  </body>
+</html>

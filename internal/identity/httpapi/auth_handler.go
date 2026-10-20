@@ -9,6 +9,7 @@ import (
 
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionshttp "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/httpapi"
 )
 
 type LoginExecutor interface {
@@ -21,12 +22,13 @@ type CurrentUserExecutor interface {
 
 type CSRFIssuer interface {
 	Issue(w http.ResponseWriter) (string, error)
+	AllowRequestOrigin(r *http.Request) bool
 }
 
 type AuthHandler struct {
 	login        LoginExecutor
 	currentUser  CurrentUserExecutor
-	cookie       sessions.Cookie
+	cookie       sessionshttp.Cookie
 	csrf         CSRFIssuer
 	logger       *slog.Logger
 	loginLimiter identity.AbuseLimiter
@@ -35,7 +37,7 @@ type AuthHandler struct {
 func NewAuth(
 	login LoginExecutor,
 	currentUser CurrentUserExecutor,
-	cookie sessions.Cookie,
+	cookie sessionshttp.Cookie,
 	csrf CSRFIssuer,
 	logger *slog.Logger,
 	loginLimiter identity.AbuseLimiter,
@@ -86,6 +88,15 @@ type readerStateResponse struct {
 
 func (h *AuthHandler) loginHandler(w http.ResponseWriter, r *http.Request) {
 	requestID := beginAPIResponse(w, r)
+
+	if !h.csrf.AllowRequestOrigin(r) {
+		writeError(w, requestID, &apiError{
+			status:  http.StatusForbidden,
+			code:    "FORBIDDEN",
+			message: "Request origin is not allowed.",
+		})
+		return
+	}
 
 	if h.loginLimiter != nil {
 		allowed, retryAfter := h.loginLimiter.Allow("login:" + clientIP(r))

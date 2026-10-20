@@ -15,6 +15,7 @@ import (
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/httpapi"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/readerstate"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionshttp "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/httpapi"
 )
 
 type fakeLoginExecutor struct {
@@ -40,12 +41,17 @@ func (f *fakeCurrentUser) Execute(_ context.Context, secret string) (identity.Us
 }
 
 type fakeCSRF struct {
-	token string
-	err   error
+	token        string
+	err          error
+	rejectOrigin bool
 }
 
 func (f fakeCSRF) Issue(http.ResponseWriter) (string, error) {
 	return f.token, f.err
+}
+
+func (f fakeCSRF) AllowRequestOrigin(*http.Request) bool {
+	return !f.rejectOrigin
 }
 
 type authTestServer struct {
@@ -56,11 +62,16 @@ type authTestServer struct {
 
 func newAuthTestServer(t *testing.T, login *fakeLoginExecutor, current *fakeCurrentUser) *authTestServer {
 	t.Helper()
+	return newAuthTestServerWithCSRF(t, login, current, fakeCSRF{token: "csrf-token"})
+}
+
+func newAuthTestServerWithCSRF(t *testing.T, login *fakeLoginExecutor, current *fakeCurrentUser, csrf fakeCSRF) *authTestServer {
+	t.Helper()
 	handler := httpapi.NewAuth(
 		login,
 		current,
-		sessions.Cookie{Secure: true, SameSite: http.SameSiteLaxMode},
-		fakeCSRF{token: "csrf-token"},
+		sessionshttp.Cookie{Secure: true, SameSite: http.SameSiteLaxMode},
+		csrf,
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)
@@ -157,7 +168,7 @@ func TestLoginSetsHostOnlySessionCookieWithoutExposingTheSecret(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse Set-Cookie: %v", err)
 		}
-		if cookie.Name == sessions.DefaultCookieName {
+		if cookie.Name == sessionshttp.DefaultCookieName {
 			sessionCookie = cookie
 		}
 	}
@@ -283,7 +294,7 @@ func TestCurrentUserRequiresAValidOpaqueSession(t *testing.T) {
 
 	server.current.err = identity.ErrWebSessionInvalid
 	status, _, body = authRequest(t, server.url, http.MethodGet, "/v1/users/me", "",
-		nil, &http.Cookie{Name: sessions.DefaultCookieName, Value: "header.payload.signature"})
+		nil, &http.Cookie{Name: sessionshttp.DefaultCookieName, Value: "header.payload.signature"})
 	if status != http.StatusUnauthorized {
 		t.Fatalf("reader state as session status = %d, want 401; body = %s", status, body)
 	}
@@ -293,7 +304,7 @@ func TestCurrentUserRequiresAValidOpaqueSession(t *testing.T) {
 
 	server.current.err = nil
 	status, headers, body := authRequest(t, server.url, http.MethodGet, "/v1/users/me", "",
-		nil, &http.Cookie{Name: sessions.DefaultCookieName, Value: "opaque-session-secret"})
+		nil, &http.Cookie{Name: sessionshttp.DefaultCookieName, Value: "opaque-session-secret"})
 	if status != http.StatusOK {
 		t.Fatalf("valid cookie status = %d, want 200; body = %s", status, body)
 	}
@@ -357,5 +368,23 @@ func TestLoginIncludesSessionExpiration(t *testing.T) {
 	}
 	if _, exists := session["secret"]; exists {
 		t.Errorf("session.secret is present: %v", session)
+	}
+}
+
+func TestLoginRejectsRequestsWithoutAllowedOriginBeforeCallingIdentity(t *testing.T) {
+	server := newAuthTestServerWithCSRF(t, &fakeLoginExecutor{result: successfulLoginResult()}, &fakeCurrentUser{}, fakeCSRF{rejectOrigin: true})
+
+	status, headers, body := authRequest(t, server.url, http.MethodPost, "/v1/auth/login",
+		`{"email":"person@example.com","password":"correct horse battery"}`,
+		map[string]string{"Content-Type": "application/json"})
+
+	if status != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", status, body)
+	}
+	if headers.Values("Set-Cookie") != nil {
+		t.Errorf("Set-Cookie = %v, want none", headers.Values("Set-Cookie"))
+	}
+	if response := decodeError(t, body); response.Error.Code != "FORBIDDEN" {
+		t.Errorf("error.code = %q, want FORBIDDEN", response.Error.Code)
 	}
 }

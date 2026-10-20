@@ -4,10 +4,7 @@ import "time"
 
 type Kind string
 
-const (
-	KindWeb    Kind = "web"
-	KindBearer Kind = "bearer"
-)
+const KindWeb Kind = "web"
 
 type Session struct {
 	ID                string

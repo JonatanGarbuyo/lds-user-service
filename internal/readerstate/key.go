@@ -2,7 +2,6 @@ package readerstate
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
@@ -10,10 +9,6 @@ import (
 	"encoding/pem"
 	"fmt"
 )
-
-func ellipticP256() elliptic.Curve {
-	return elliptic.P256()
-}
 
 func keyID(publicKey *ecdsa.PublicKey) string {
 	x, y := publicKeyCoordinates(publicKey)
@@ -78,23 +73,5 @@ func ParsePublicKeyPEM(value []byte) (*ecdsa.PublicKey, error) {
 	if block == nil {
 		return nil, fmt.Errorf("%w: public key PEM block not found", ErrUnsupportedKey)
 	}
-
-	if parsed, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
-		publicKey, ok := parsed.(*ecdsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("%w: public key is not ECDSA", ErrUnsupportedKey)
-		}
-		return publicKey, nil
-	}
-	if certificate, err := x509.ParseCertificate(block.Bytes); err == nil {
-		publicKey, ok := certificate.PublicKey.(*ecdsa.PublicKey)
-		if !ok {
-			return nil, fmt.Errorf("%w: certificate key is not ECDSA", ErrUnsupportedKey)
-		}
-		return publicKey, nil
-	}
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return &key.PublicKey, nil
-	}
-	return nil, fmt.Errorf("%w: public key must be PKIX, a certificate or SEC1 ECDSA", ErrUnsupportedKey)
+	return parsePublicKeyDER(block.Bytes)
 }

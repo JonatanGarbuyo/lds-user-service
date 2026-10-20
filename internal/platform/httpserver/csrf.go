@@ -54,6 +54,13 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+func (c *CSRF) AllowRequestOrigin(r *http.Request) bool {
+	if r.Header.Get("Origin") == "" && r.Header.Get("Referer") == "" {
+		return false
+	}
+	return requestOriginAllowed(r, c.allowed)
+}
+
 func (c *CSRF) Issue(w http.ResponseWriter) (string, error) {
 	var buffer [32]byte
 	if _, err := rand.Read(buffer[:]); err != nil {

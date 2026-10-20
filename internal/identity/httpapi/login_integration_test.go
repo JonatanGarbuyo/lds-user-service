@@ -29,6 +29,7 @@ import (
 	"github.com/JonatanGarbuyo/lds-user-service/internal/readerstate"
 	readerstatehttp "github.com/JonatanGarbuyo/lds-user-service/internal/readerstate/httpapi"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionshttp "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/httpapi"
 	sessionspostgres "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/postgres"
 )
 
@@ -70,12 +71,12 @@ func newLoginIntegrationServer(t *testing.T) *loginIntegrationServer {
 		t.Fatalf("NewLoginUser() error = %v", err)
 	}
 	currentUser := identity.NewCurrentUser(users, sessionService)
-	cookie := sessions.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
+	cookie := sessionshttp.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
 	authHandler := httpapi.NewAuth(
 		login,
 		currentUser,
 		cookie,
-		httpserver.NewCSRF([]string{loginTestOrigin}, sessions.DefaultCookieName),
+		httpserver.NewCSRF([]string{loginTestOrigin}, sessionshttp.DefaultCookieName),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	)
@@ -84,7 +85,7 @@ func newLoginIntegrationServer(t *testing.T) *loginIntegrationServer {
 	authHandler.Register(mux)
 	readerstatehttp.New(signer).Register(mux)
 	cors := httpserver.NewCORS([]string{loginTestOrigin})
-	csrf := httpserver.NewCSRF([]string{loginTestOrigin}, sessions.DefaultCookieName)
+	csrf := httpserver.NewCSRF([]string{loginTestOrigin}, sessionshttp.DefaultCookieName)
 	server := httptest.NewServer(cors.Middleware(csrf.Middleware(mux)))
 	t.Cleanup(server.Close)
 	t.Cleanup(db.Close)
@@ -153,7 +154,7 @@ func getWithCookie(t *testing.T, baseURL, path, cookieValue string) (int, http.H
 		t.Fatalf("new GET request: %v", err)
 	}
 	if cookieValue != "" {
-		request.AddCookie(&http.Cookie{Name: sessions.DefaultCookieName, Value: cookieValue})
+		request.AddCookie(&http.Cookie{Name: sessionshttp.DefaultCookieName, Value: cookieValue})
 	}
 	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
 	if err != nil {
@@ -174,7 +175,7 @@ func sessionCookie(t *testing.T, headers http.Header) *http.Cookie {
 		if err != nil {
 			t.Fatalf("parse Set-Cookie: %v", err)
 		}
-		if cookie.Name == sessions.DefaultCookieName {
+		if cookie.Name == sessionshttp.DefaultCookieName {
 			return cookie
 		}
 	}
@@ -357,8 +358,8 @@ func TestSessionSurvivesServiceRestartAndReaderStateNeverAuthenticates(t *testin
 	httpapi.NewAuth(
 		login,
 		identity.NewCurrentUser(users, sessionService),
-		sessions.Cookie{Secure: true, SameSite: http.SameSiteLaxMode},
-		httpserver.NewCSRF([]string{loginTestOrigin}, sessions.DefaultCookieName),
+		sessionshttp.Cookie{Secure: true, SameSite: http.SameSiteLaxMode},
+		httpserver.NewCSRF([]string{loginTestOrigin}, sessionshttp.DefaultCookieName),
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		nil,
 	).Register(restartedMux)

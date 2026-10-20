@@ -150,7 +150,7 @@ curl -i -b cookies.txt http://127.0.0.1:8080/v1/users/me
 curl -i http://127.0.0.1:8080/v1/jwks
 ```
 
-La respuesta `200` incluye `user`, `session` (sin secreto), `readerState.signedSnapshot` y `csrfToken`. El snapshot es un JWT **ES256** firmado con `kid`, pensado exclusivamente para UX: el backend nunca lo acepta como sustituto de la cookie ni usa sus claims para autorizar. Los clientes deben validar firma, algoritmo, `iss`, `aud` y `exp` contra `GET /v1/jwks`.
+La cookie de sesión se emite hasta el límite absoluto (90 días por defecto), mientras que el servidor rechaza la sesión tras 30 días sin actividad y renueva la actividad en cada operación autenticada. La respuesta `200` incluye `user`, `session` (sin secreto), `readerState.signedSnapshot` y `csrfToken`. El snapshot es un JWT **ES256** firmado con `kid`, pensado exclusivamente para UX: el backend nunca lo acepta como sustituto de la cookie ni usa sus claims para autorizar. Los clientes deben validar firma, algoritmo, `iss`, `aud` y `exp` contra `GET /v1/jwks`.
 
 Reglas relevantes:
 
@@ -158,7 +158,7 @@ Reglas relevantes:
 - La sesión se persiste como hash SHA-256 del secreto; el valor en claro nunca se almacena ni se registra en logs.
 - `GET /v1/users/me` exige la cookie de sesión. Un `signedSnapshot` o un header `Authorization` no autentican.
 - CORS sólo responde a los orígenes explícitos de `CORS_ALLOWED_ORIGINS` con `Access-Control-Allow-Credentials: true` y `Vary: Origin`. Nunca se combina con `*`.
-- Las mutaciones con cookie requieren doble envío CSRF (`lds_csrf` + `X-CSRF-Token`). El login valida `Origin`/`Referer`; un origen no permitido responde `403 FORBIDDEN` y no crea sesión.
+- Las mutaciones con cookie requieren doble envío CSRF (`lds_csrf` + `X-CSRF-Token`). El login exige evidencia de origen de navegador (`Origin` o `Referer`) y que coincida con un origen permitido o con el host del servicio; un origen ausente o no permitido responde `403 FORBIDDEN` y no crea sesión.
 - `GET /v1/jwks` es público, cacheable (`Cache-Control: public, max-age=300`) y soporta `ETag`/`304`.
 - En desarrollo, si no se configura una clave, se genera una clave ES256 efímera al arrancar. En otros entornos la clave es obligatoria y las claves públicas anteriores pueden mantenerse para rotación.
 
@@ -245,6 +245,7 @@ Las migraciones no se ejecutan automáticamente al arrancar el servidor ni al ha
 make test
 make test-race
 make test-integration   # espera PostgreSQL healthy y ejecuta tests con -tags=integration
+make test-browser       # Playwright: sitio y servicio en subdominios de lds.test
 make fmt-check
 make lint
 ```
@@ -253,13 +254,16 @@ Los tests unitarios cubren la configuración, el ciclo de arranque/apagado del s
 
 `make test-integration` arranca PostgreSQL con `docker compose up -d --wait postgres` (espera el healthcheck), deriva `TEST_DATABASE_URL` de `.env` —o de los valores por defecto— y ejecuta `go test -tags=integration ./...`. Se puede sobrescribir con `TEST_DATABASE_URL=...` si se usan credenciales o puerto no estándar; en ese caso la URL debe estar codificada para URL.
 
+`make test-browser` instala Playwright y ejecuta un navegador Chromium real con el sitio en `app.lds.test:4173` y el servicio en `api.lds.test:8090`. El test registra y verifica un User, hace login desde el sitio mediante `fetch(..., { credentials: 'include' })`, comprueba que la cookie `lds_session` es host-only de `api.lds.test`, `HttpOnly`, `Secure` y `SameSite=Lax`, que JavaScript del sitio no puede leerla, que `/v1/users/me` depende sólo de la cookie y que el snapshot ES256 verifica contra `/v1/jwks`. También comprueba que el HTML editorial público carga sin cookies. Requiere PostgreSQL migrado; si no hay Go en el host, el runner usa Docker para el servicio. Los hosts `*.lds.test` se resuelven a `127.0.0.1` sólo dentro del navegador de pruebas.
+
 ## CI
 
 `.github/workflows/ci.yml` ejecuta en cada push a `main` y en cada pull request:
 
 1. `go build ./...`, `go vet ./...`, comprobación de `gofmt`, `go test -race ./...`, golangci-lint `v2.15.0` y validación del contrato con Redocly CLI.
 2. Aplicación, consulta, rollback y reaplicación de migraciones contra un PostgreSQL 17 real.
-3. Smoke test de Docker Compose: arranque, espera de `/readyz`, migraciones, healthcheck del contenedor y limpieza de volúmenes.
+3. Browser integration con Playwright: sitio y servicio bajo subdominios de un dominio registrable común, cookie host-only, CORS con credenciales, `/v1/users/me`, verificación JWKS y HTML editorial sin autenticación.
+4. Smoke test de Docker Compose: arranque, espera de `/readyz`, migraciones, healthcheck del contenedor y limpieza de volúmenes.
 
 Para reproducirlo localmente:
 
@@ -286,7 +290,8 @@ internal/identity/email/             adaptador de correo de desarrollo (outbox J
 internal/identity/password/          adaptador Argon2id
 internal/identity/postgres/          adaptadores PostgreSQL de UserRepository y EmailVerificationRepository
 internal/identity/httpapi/           transporte HTTP de registro, verificación, login y /users/me
-internal/sessions/                   sesiones opacas, cookie host-only y servicio de sesión
+internal/sessions/                   sesiones opacas y servicio de sesión (sin HTTP)
+internal/sessions/httpapi/           adaptador de cookie host-only
 internal/sessions/postgres/          adaptador PostgreSQL de SessionRepository
 internal/readerstate/                firma ES256, verificación, JWKS y rotación de claves
 internal/readerstate/httpapi/        endpoint público GET /v1/jwks
@@ -296,6 +301,7 @@ internal/platform/postgres/          pool PostgreSQL compartido (pgx)
 internal/platform/ratelimit/         rate limiter en memoria por proceso
 migrations/                          migraciones versionadas y runner embebido
 docs/adr/                            decisiones de arquitectura
+web-tests/                           Playwright: sitio/servicio en subdominios y HTML público
 ```
 
 La infraestructura transversal vive bajo `internal/platform/`. `internal/identity` contiene el dominio y los casos de uso sin importar PostgreSQL; los adaptadores concretos implementan los puertos de cada feature y se componen en `cmd/server`. La estructura por features y los puertos/adaptadores internos se documentan en [ADR-0001](docs/adr/0001-project-organization.md). El Reader State vive en su propia feature y nunca participa de la autorización.

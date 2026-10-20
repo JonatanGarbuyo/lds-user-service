@@ -172,3 +172,28 @@ func TestCSRFIssueSetsReadableTokenCookie(t *testing.T) {
 		t.Error("CSRF cookie must be Secure")
 	}
 }
+
+func TestCSRFRequiresExplicitBrowserOriginEvidence(t *testing.T) {
+	csrf := httpserver.NewCSRF([]string{"https://app.example.com"}, "lds_session")
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/auth/login", nil)
+	if csrf.AllowRequestOrigin(request) {
+		t.Error("request without Origin or Referer was allowed")
+	}
+
+	request.Header.Set("Origin", "https://app.example.com")
+	if !csrf.AllowRequestOrigin(request) {
+		t.Error("configured Origin was rejected")
+	}
+
+	request.Header.Set("Origin", "https://evil.example.com")
+	if csrf.AllowRequestOrigin(request) {
+		t.Error("foreign Origin was allowed")
+	}
+
+	request.Header.Del("Origin")
+	request.Header.Set("Referer", "https://app.example.com/login")
+	if !csrf.AllowRequestOrigin(request) {
+		t.Error("configured Referer was rejected")
+	}
+}

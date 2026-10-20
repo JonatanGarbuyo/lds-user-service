@@ -1,4 +1,4 @@
-package sessions
+package httpapi
 
 import (
 	"net/http"

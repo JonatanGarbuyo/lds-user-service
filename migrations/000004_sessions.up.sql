@@ -8,7 +8,7 @@ CREATE TABLE sessions (
     idle_expires_at timestamptz NOT NULL,
     absolute_expires_at timestamptz NOT NULL,
     revoked_at timestamptz,
-    CONSTRAINT sessions_kind_check CHECK (kind IN ('web', 'bearer')),
+    CONSTRAINT sessions_kind_check CHECK (kind = 'web'),
     CONSTRAINT sessions_secret_hash_key UNIQUE (secret_hash),
     CONSTRAINT sessions_secret_hash_length CHECK (octet_length(secret_hash) = 32),
     CONSTRAINT sessions_idle_expiry_after_activity CHECK (idle_expires_at > last_activity_at),

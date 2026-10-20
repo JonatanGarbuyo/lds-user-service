@@ -1,4 +1,4 @@
-package sessions_test
+package httpapi_test
 
 import (
 	"context"
@@ -7,12 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionshttp "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/httpapi"
 )
 
 func TestWebSessionCookieIsHostOnlySecureHttpOnlyAndSameSite(t *testing.T) {
 	recorder := httptest.NewRecorder()
-	cookie := sessions.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
+	cookie := sessionshttp.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
 	expiresAt := time.Now().Add(time.Hour)
 
 	cookie.Set(recorder, "opaque-secret", expiresAt)
@@ -23,8 +23,8 @@ func TestWebSessionCookieIsHostOnlySecureHttpOnlyAndSameSite(t *testing.T) {
 		t.Fatalf("cookies = %d, want 1", len(cookies))
 	}
 	value := cookies[0]
-	if value.Name != sessions.DefaultCookieName {
-		t.Errorf("name = %q, want %q", value.Name, sessions.DefaultCookieName)
+	if value.Name != sessionshttp.DefaultCookieName {
+		t.Errorf("name = %q, want %q", value.Name, sessionshttp.DefaultCookieName)
 	}
 	if value.Value != "opaque-secret" {
 		t.Errorf("value = %q", value.Value)
@@ -47,9 +47,9 @@ func TestWebSessionCookieIsHostOnlySecureHttpOnlyAndSameSite(t *testing.T) {
 }
 
 func TestWebSessionCookieCanBeReadAndCleared(t *testing.T) {
-	cookie := sessions.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
+	cookie := sessionshttp.Cookie{Secure: true, SameSite: http.SameSiteLaxMode}
 	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/users/me", nil)
-	request.AddCookie(&http.Cookie{Name: sessions.DefaultCookieName, Value: "opaque-secret"})
+	request.AddCookie(&http.Cookie{Name: sessionshttp.DefaultCookieName, Value: "opaque-secret"})
 
 	secret, ok := cookie.Read(request)
 	if !ok || secret != "opaque-secret" {
