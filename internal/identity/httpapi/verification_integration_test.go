@@ -659,14 +659,28 @@ func TestVerificationConfirmationDoesNotCreateSession(t *testing.T) {
 		t.Errorf("Authorization = %q, want no bearer", headers.Get("Authorization"))
 	}
 
-	var sessionTable bool
+	var sessions int
 	if err := server.db.Pool.QueryRow(
 		context.Background(),
-		`SELECT to_regclass('public.sessions') IS NOT NULL`,
-	).Scan(&sessionTable); err != nil {
-		t.Fatalf("check sessions table: %v", err)
+		`SELECT count(*) FROM sessions WHERE user_id = $1`,
+		userID(t, server, email),
+	).Scan(&sessions); err != nil {
+		t.Fatalf("count sessions: %v", err)
 	}
-	if sessionTable {
-		t.Error("confirmation created or required a sessions table")
+	if sessions != 0 {
+		t.Errorf("confirmation created %d sessions, want 0", sessions)
 	}
+}
+
+func userID(t *testing.T, server *verificationIntegrationServer, email string) string {
+	t.Helper()
+	var id string
+	if err := server.db.Pool.QueryRow(
+		context.Background(),
+		`SELECT id::text FROM users WHERE email = $1`,
+		email,
+	).Scan(&id); err != nil {
+		t.Fatalf("query user id: %v", err)
+	}
+	return id
 }

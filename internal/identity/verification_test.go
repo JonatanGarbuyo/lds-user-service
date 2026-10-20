@@ -72,6 +72,22 @@ func (f *verificationFixture) FindByEmail(_ context.Context, email string) (iden
 	return user, nil
 }
 
+func (f *verificationFixture) FindCredentialsByEmail(_ context.Context, email string) (identity.UserCredentials, error) {
+	user, exists := f.users[email]
+	if !exists {
+		return identity.UserCredentials{}, identity.ErrUserNotFound
+	}
+	return identity.UserCredentials{User: user, PasswordHash: ""}, nil
+}
+
+func (f *verificationFixture) FindByID(_ context.Context, userID string) (identity.User, error) {
+	user, exists := f.usersByID[userID]
+	if !exists {
+		return identity.User{}, identity.ErrUserNotFound
+	}
+	return user, nil
+}
+
 func (f *verificationFixture) CreateChallenge(
 	_ context.Context,
 	userID, codeHash string,

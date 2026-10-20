@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -18,6 +19,10 @@ import (
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/ratelimit"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/readerstate"
+	readerstatehttp "github.com/JonatanGarbuyo/lds-user-service/internal/readerstate/httpapi"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/sessions"
+	sessionspostgres "github.com/JonatanGarbuyo/lds-user-service/internal/sessions/postgres"
 )
 
 func main() {
@@ -76,7 +81,66 @@ func run() error {
 	registerHandler := httpapi.New(registerUser, logger)
 	verificationHandler := httpapi.NewEmailVerification(verification, logger)
 
-	server := httpserver.New(cfg.HTTPAddr, db, logger, registerHandler.Register, verificationHandler.Register)
+	sessionService := sessions.NewService(sessionspostgres.NewRepository(db.Pool), sessions.Options{
+		IdleTTL:     cfg.SessionIdleTTL,
+		AbsoluteTTL: cfg.SessionAbsoluteTTL,
+	})
+	signer, generatedKey, err := readerstate.LoadSigner(readerstate.SignerConfig{
+		Issuer:                 cfg.ReaderStateIssuer,
+		Audience:               cfg.ReaderStateAudience,
+		TTL:                    cfg.ReaderStateTTL,
+		PrivateKeyPEM:          []byte(cfg.ReaderStatePrivateKey),
+		PrivateKeyFile:         cfg.ReaderStatePrivateKeyFile,
+		PreviousPublicKeysPEM:  []byte(cfg.ReaderStatePreviousKeys),
+		PreviousPublicKeysFile: cfg.ReaderStatePreviousKeysFile,
+		GenerateIfMissing:      cfg.AppEnv == "development",
+	})
+	if err != nil {
+		return fmt.Errorf("configure reader state signer: %w", err)
+	}
+	if generatedKey {
+		logger.Warn("generated an ephemeral reader state key for development; snapshots will not survive a restart")
+	}
+
+	loginUser, err := identity.NewLoginUser(identity.LoginDependencies{
+		Users:                userRepository,
+		Passwords:            password.New(),
+		Sessions:             sessionService,
+		ReaderState:          signer,
+		HashLimiter:          hashLimiter,
+		VerificationRequired: cfg.EmailVerificationRequired,
+	})
+	if err != nil {
+		return fmt.Errorf("configure login: %w", err)
+	}
+	currentUser := identity.NewCurrentUser(userRepository, sessionService)
+	cookie := sessions.Cookie{
+		Name:     cfg.SessionCookieName,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	csrf := httpserver.NewCSRF(cfg.CORSAllowedOrigins, cfg.SessionCookieName)
+	authHandler := httpapi.NewAuth(
+		loginUser,
+		currentUser,
+		cookie,
+		csrf,
+		logger,
+		ratelimit.New(10, time.Minute),
+	)
+	jwksHandler := readerstatehttp.New(signer)
+
+	cors := httpserver.NewCORS(cfg.CORSAllowedOrigins)
+	server := httpserver.NewWithOptions(
+		cfg.HTTPAddr,
+		db,
+		logger,
+		httpserver.Options{Middleware: []func(http.Handler) http.Handler{cors.Middleware, csrf.Middleware}},
+		registerHandler.Register,
+		verificationHandler.Register,
+		authHandler.Register,
+		jwksHandler.Register,
+	)
 	if err := server.Start(ctx); err != nil {
 		return fmt.Errorf("start http server: %w", err)
 	}

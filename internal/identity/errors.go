@@ -18,6 +18,10 @@ var (
 	ErrInvalidVerificationCode = errors.New("invalid verification code")
 	ErrRateLimited             = errors.New("rate limited")
 	ErrVerificationDelivery    = errors.New("verification email delivery failed")
+	ErrInvalidCredentials      = errors.New("invalid credentials")
+	ErrEmailNotVerified        = errors.New("email is not verified")
+	ErrAccountSuspended        = errors.New("account cannot sign in")
+	ErrWebSessionInvalid       = errors.New("web session is invalid")
 )
 
 type ValidationError struct {

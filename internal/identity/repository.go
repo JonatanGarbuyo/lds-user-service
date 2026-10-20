@@ -5,13 +5,24 @@ import (
 	"time"
 )
 
+type UserCredentials struct {
+	User         User
+	PasswordHash string
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, newUser NewUser) (User, error)
 	FindByEmail(ctx context.Context, email string) (User, error)
+	FindCredentialsByEmail(ctx context.Context, email string) (UserCredentials, error)
+	FindByID(ctx context.Context, userID string) (User, error)
 }
 
 type PasswordHasher interface {
 	Hash(password string) (string, error)
+}
+
+type PasswordVerifier interface {
+	Verify(password, encoded string) (bool, error)
 }
 
 type SecretHasher interface {
