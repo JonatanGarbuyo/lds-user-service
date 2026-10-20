@@ -63,18 +63,39 @@ func writeSecurityError(w http.ResponseWriter, r *http.Request, status int, code
 }
 
 func setSecurityRequestID(w http.ResponseWriter, r *http.Request) string {
+	return SetRequestID(w, r)
+}
+
+func SetRequestID(w http.ResponseWriter, r *http.Request) string {
 	requestID := r.Header.Get("X-Request-Id")
-	if requestID == "" || len(requestID) > 128 {
-		requestID = newSecurityRequestID()
+	if !validRequestID(requestID) {
+		requestID = newRequestID()
 	}
 	w.Header().Set("X-Request-Id", requestID)
 	return requestID
 }
 
-func newSecurityRequestID() string {
-	var buffer [16]byte
-	if _, err := rand.Read(buffer[:]); err != nil {
-		return "unknown"
+func validRequestID(requestID string) bool {
+	if requestID == "" || len(requestID) > 128 {
+		return false
 	}
-	return hex.EncodeToString(buffer[:])
+	for _, character := range requestID {
+		switch {
+		case character >= 'a' && character <= 'z':
+		case character >= 'A' && character <= 'Z':
+		case character >= '0' && character <= '9':
+		case character == '-', character == '_', character == '.':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func newRequestID() string {
+	var buffer [16]byte
+	if _, err := rand.Read(buffer[:]); err == nil {
+		return hex.EncodeToString(buffer[:])
+	}
+	return "unknown"
 }
