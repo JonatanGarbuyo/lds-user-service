@@ -22,12 +22,13 @@ func NewCORS(origins []string) *CORS {
 func (c *CORS) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" && originAllowed(r, origin, c.allowed) {
+		if origin != "" && explicitOriginAllowed(origin, c.allowed) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
 			w.Header().Add("Vary", "Origin")
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, Retry-After")
 			if r.Method == http.MethodOptions {
+				setSecurityRequestID(w, r)
 				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 				w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-CSRF-Token, X-Request-Id")
 				w.Header().Set("Access-Control-Max-Age", "600")
@@ -35,19 +36,20 @@ func (c *CORS) Middleware(next http.Handler) http.Handler {
 				return
 			}
 		} else if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusForbidden)
+			writeSecurityError(w, r, http.StatusForbidden, "FORBIDDEN", "Request origin is not allowed.")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
+func explicitOriginAllowed(origin string, allowed map[string]struct{}) bool {
+	_, exists := allowed[origin]
+	return exists
+}
+
 func writeSecurityError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
-	requestID := r.Header.Get("X-Request-Id")
-	if requestID == "" || len(requestID) > 128 {
-		requestID = newSecurityRequestID()
-	}
-	w.Header().Set("X-Request-Id", requestID)
+	requestID := setSecurityRequestID(w, r)
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
@@ -58,6 +60,15 @@ func writeSecurityError(w http.ResponseWriter, r *http.Request, status int, code
 			"requestId": requestID,
 		},
 	})
+}
+
+func setSecurityRequestID(w http.ResponseWriter, r *http.Request) string {
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" || len(requestID) > 128 {
+		requestID = newSecurityRequestID()
+	}
+	w.Header().Set("X-Request-Id", requestID)
+	return requestID
 }
 
 func newSecurityRequestID() string {

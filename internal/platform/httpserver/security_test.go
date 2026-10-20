@@ -50,6 +50,23 @@ func TestCORSDoesNotAllowUnknownOriginsOrWildcards(t *testing.T) {
 	}
 }
 
+func TestCORSRequiresExplicitConfigurationForSameHostOrigins(t *testing.T) {
+	middleware := httpserver.NewCORS([]string{"https://app.example.com"})
+	handler := middleware.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/users/me", nil)
+	request.Header.Set("Origin", "https://service.example.com")
+	request.Host = "service.example.com"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Error("same-host origin without explicit configuration received CORS permission")
+	}
+}
+
 func TestCORSHandlesPreflightForAllowedOrigin(t *testing.T) {
 	middleware := httpserver.NewCORS([]string{"https://app.example.com"})
 	handler := middleware.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -74,6 +91,28 @@ func TestCORSHandlesPreflightForAllowedOrigin(t *testing.T) {
 	}
 	if got := recorder.Header().Get("Access-Control-Allow-Headers"); got == "" {
 		t.Error("Access-Control-Allow-Headers is empty")
+	}
+	if got := recorder.Header().Get("X-Request-Id"); got == "" {
+		t.Error("X-Request-Id is empty")
+	}
+}
+
+func TestCORSRejectsForbiddenPreflightWithRequestID(t *testing.T) {
+	middleware := httpserver.NewCORS([]string{"https://app.example.com"})
+	handler := middleware.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("forbidden preflight reached the application handler")
+	}))
+
+	request := httptest.NewRequestWithContext(context.Background(), http.MethodOptions, "/v1/auth/login", nil)
+	request.Header.Set("Origin", "https://evil.example.com")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", recorder.Code)
+	}
+	if recorder.Header().Get("X-Request-Id") == "" {
+		t.Error("X-Request-Id is empty")
 	}
 }
 
