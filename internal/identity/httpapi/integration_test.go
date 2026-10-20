@@ -42,9 +42,9 @@ func newIntegrationServerWithHashLimit(t *testing.T, hashLimit int) *integration
 
 	db := testpg.OpenDatabase(t)
 	repository := identitypostgres.NewRepository(db.Pool)
-	register := identity.NewRegisterUser(repository, password.New())
+	register := identity.NewRegisterUser(repository, password.New(), nil)
 	if hashLimit > 0 {
-		register = identity.NewRegisterUserWithLimit(repository, password.New(), hashLimit)
+		register = identity.NewRegisterUserWithLimit(repository, password.New(), nil, hashLimit)
 	}
 	handler := httpapi.New(register, slog.New(slog.NewTextHandler(io.Discard, nil)))
 

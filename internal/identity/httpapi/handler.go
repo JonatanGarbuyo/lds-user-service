@@ -25,7 +25,7 @@ const (
 )
 
 type UserRegistrar interface {
-	Execute(ctx context.Context, input identity.RegisterUserInput) (identity.User, error)
+	Execute(ctx context.Context, input identity.RegisterUserInput) (identity.RegisterUserResult, error)
 }
 
 type Handler struct {
@@ -55,10 +55,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.register.Execute(r.Context(), input)
+	result, err := h.register.Execute(r.Context(), input)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusCreated, newUserResponse(user))
+		if result.VerificationDeliveryError != nil {
+			h.logger.ErrorContext(r.Context(), "email verification dispatch failed",
+				"request_id", requestID,
+				"error", result.VerificationDeliveryError,
+			)
+		}
+		writeJSON(w, http.StatusCreated, newUserResponse(result.User))
 	case errors.Is(err, identity.ErrEmailAlreadyExists):
 		writeError(w, requestID, &apiError{
 			status:  http.StatusConflict,
@@ -137,9 +143,20 @@ type errorBody struct {
 }
 
 func decodeRegisterRequest(w http.ResponseWriter, r *http.Request) (identity.RegisterUserInput, *apiError) {
+	var request registerRequest
+	if failure := decodeJSONBody(w, r, &request); failure != nil {
+		return identity.RegisterUserInput{}, failure
+	}
+	return identity.RegisterUserInput{
+		Email:    request.Email,
+		Password: request.Password,
+	}, nil
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, target any) *apiError {
 	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil || mediaType != jsonMediaType {
-		return identity.RegisterUserInput{}, &apiError{
+		return &apiError{
 			status:  http.StatusUnsupportedMediaType,
 			code:    "UNSUPPORTED_MEDIA_TYPE",
 			message: "Content-Type must be application/json.",
@@ -149,22 +166,17 @@ func decodeRegisterRequest(w http.ResponseWriter, r *http.Request) (identity.Reg
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	decoder.DisallowUnknownFields()
 
-	var request registerRequest
-	if err := decoder.Decode(&request); err != nil {
-		return identity.RegisterUserInput{}, decodeFailure(err)
+	if err := decoder.Decode(target); err != nil {
+		return decodeFailure(err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != nil {
 		if !errors.Is(err, io.EOF) {
-			return identity.RegisterUserInput{}, decodeFailure(err)
+			return decodeFailure(err)
 		}
 	} else {
-		return identity.RegisterUserInput{}, invalidJSON()
+		return invalidJSON()
 	}
-
-	return identity.RegisterUserInput{
-		Email:    request.Email,
-		Password: request.Password,
-	}, nil
+	return nil
 }
 
 func decodeFailure(err error) *apiError {

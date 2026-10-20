@@ -7,14 +7,17 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity"
+	identityemail "github.com/JonatanGarbuyo/lds-user-service/internal/identity/email"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/httpapi"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/identity/password"
 	identitypostgres "github.com/JonatanGarbuyo/lds-user-service/internal/identity/postgres"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/config"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/httpserver"
 	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/postgres"
+	"github.com/JonatanGarbuyo/lds-user-service/internal/platform/ratelimit"
 )
 
 func main() {
@@ -48,12 +51,35 @@ func run() error {
 	cancelConnect()
 	defer db.Close()
 
-	registerUser := identity.NewRegisterUser(identitypostgres.NewRepository(db.Pool), password.New())
-	server := httpserver.New(cfg.HTTPAddr, db, logger, httpapi.New(registerUser, logger).Register)
+	mailSender, err := identityemail.NewDevSender(cfg.MailOutboxFile)
+	if err != nil {
+		return fmt.Errorf("configure development email sender: %w", err)
+	}
+
+	userRepository := identitypostgres.NewRepository(db.Pool)
+	verification := identity.NewEmailVerificationService(identity.EmailVerificationDependencies{
+		Users:          userRepository,
+		Challenges:     identitypostgres.NewVerificationRepository(db.Pool),
+		Hasher:         password.New(),
+		Sender:         mailSender,
+		RequestLimiter: ratelimit.New(10, time.Minute),
+		ConfirmLimiter: ratelimit.New(20, time.Minute),
+		Now:            time.Now,
+	})
+	registerUser := identity.NewRegisterUser(userRepository, password.New(), verification)
+	registerHandler := httpapi.New(registerUser, logger)
+	verificationHandler := httpapi.NewEmailVerification(verification, logger)
+
+	server := httpserver.New(cfg.HTTPAddr, db, logger, registerHandler.Register, verificationHandler.Register)
 	if err := server.Start(ctx); err != nil {
 		return fmt.Errorf("start http server: %w", err)
 	}
-	logger.Info("user service started", "addr", server.Addr(), "env", cfg.AppEnv)
+	logger.Info("user service started",
+		"addr", server.Addr(),
+		"env", cfg.AppEnv,
+		"email_verification_required", cfg.EmailVerificationRequired,
+		"mail_outbox_file", cfg.MailOutboxFile,
+	)
 
 	<-ctx.Done()
 	logger.Info("shutting down user service")

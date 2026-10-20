@@ -8,35 +8,42 @@ import (
 const defaultMaxConcurrentHashes = 2
 
 type RegisterUser struct {
-	users     UserRepository
-	hasher    PasswordHasher
-	hashSlots chan struct{}
+	users        UserRepository
+	hasher       PasswordHasher
+	verification EmailVerificationIssuer
+	hashSlots    chan struct{}
 }
 
-func NewRegisterUser(users UserRepository, hasher PasswordHasher) *RegisterUser {
-	return NewRegisterUserWithLimit(users, hasher, defaultMaxConcurrentHashes)
+type RegisterUserResult struct {
+	User                      User
+	VerificationDeliveryError error
 }
 
-func NewRegisterUserWithLimit(users UserRepository, hasher PasswordHasher, maxConcurrentHashes int) *RegisterUser {
+func NewRegisterUser(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer) *RegisterUser {
+	return NewRegisterUserWithLimit(users, hasher, verification, defaultMaxConcurrentHashes)
+}
+
+func NewRegisterUserWithLimit(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer, maxConcurrentHashes int) *RegisterUser {
 	if maxConcurrentHashes < 1 {
 		maxConcurrentHashes = 1
 	}
 	return &RegisterUser{
-		users:     users,
-		hasher:    hasher,
-		hashSlots: make(chan struct{}, maxConcurrentHashes),
+		users:        users,
+		hasher:       hasher,
+		verification: verification,
+		hashSlots:    make(chan struct{}, maxConcurrentHashes),
 	}
 }
 
-func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (User, error) {
+func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (RegisterUserResult, error) {
 	email := NormalizeEmail(input.Email)
 	if err := validateRegistration(email, input.Password); err != nil {
-		return User{}, err
+		return RegisterUserResult{}, err
 	}
 
 	passwordHash, err := r.hashPassword(input.Password)
 	if err != nil {
-		return User{}, err
+		return RegisterUserResult{}, err
 	}
 
 	user, err := r.users.Create(ctx, NewUser{
@@ -44,9 +51,14 @@ func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (Us
 		PasswordHash: passwordHash,
 	})
 	if err != nil {
-		return User{}, fmt.Errorf("create user: %w", err)
+		return RegisterUserResult{}, fmt.Errorf("create user: %w", err)
 	}
-	return user, nil
+
+	result := RegisterUserResult{User: user}
+	if r.verification != nil {
+		result.VerificationDeliveryError = r.verification.IssueForUser(ctx, user)
+	}
+	return result, nil
 }
 
 func (r *RegisterUser) hashPassword(password string) (string, error) {

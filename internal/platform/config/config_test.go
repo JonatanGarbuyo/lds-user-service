@@ -40,6 +40,12 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.DBMaxConns != 10 {
 		t.Errorf("DBMaxConns = %d, want %d", cfg.DBMaxConns, 10)
 	}
+	if !cfg.EmailVerificationRequired {
+		t.Error("EmailVerificationRequired = false, want true by default")
+	}
+	if cfg.MailOutboxFile != "/tmp/lds-user-service-mail/outbox.jsonl" {
+		t.Errorf("MailOutboxFile = %q, want the development outbox default", cfg.MailOutboxFile)
+	}
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
@@ -66,13 +72,15 @@ func TestLoadRejectsInvalidDatabaseURL(t *testing.T) {
 
 func TestLoadOverrides(t *testing.T) {
 	cfg, err := config.LoadFrom(env(map[string]string{
-		"APP_ENV":            "production",
-		"HTTP_ADDR":          ":9090",
-		"LOG_LEVEL":          "debug",
-		"DATABASE_URL":       "postgresql://lds:secret@db:5432/lds",
-		"SHUTDOWN_TIMEOUT":   "30s",
-		"DB_CONNECT_TIMEOUT": "1m",
-		"DB_MAX_CONNS":       "20",
+		"APP_ENV":                     "production",
+		"HTTP_ADDR":                   ":9090",
+		"LOG_LEVEL":                   "debug",
+		"DATABASE_URL":                "postgresql://lds:secret@db:5432/lds",
+		"SHUTDOWN_TIMEOUT":            "30s",
+		"DB_CONNECT_TIMEOUT":          "1m",
+		"DB_MAX_CONNS":                "20",
+		"EMAIL_VERIFICATION_REQUIRED": "false",
+		"MAIL_OUTBOX_FILE":            "/tmp/custom-mail.jsonl",
 	}))
 	if err != nil {
 		t.Fatalf("LoadFrom() error = %v", err)
@@ -96,6 +104,12 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.DBMaxConns != 20 {
 		t.Errorf("DBMaxConns = %d, want %d", cfg.DBMaxConns, 20)
 	}
+	if cfg.EmailVerificationRequired {
+		t.Error("EmailVerificationRequired = true, want false")
+	}
+	if cfg.MailOutboxFile != "/tmp/custom-mail.jsonl" {
+		t.Errorf("MailOutboxFile = %q, want /tmp/custom-mail.jsonl", cfg.MailOutboxFile)
+	}
 }
 
 func TestLoadRejectsInvalidValues(t *testing.T) {
@@ -110,6 +124,7 @@ func TestLoadRejectsInvalidValues(t *testing.T) {
 		{name: "db max conns", key: "DB_MAX_CONNS", value: "many", want: "DB_MAX_CONNS"},
 		{name: "zero db max conns", key: "DB_MAX_CONNS", value: "0", want: "DB_MAX_CONNS"},
 		{name: "log level", key: "LOG_LEVEL", value: "verbose", want: "LOG_LEVEL"},
+		{name: "email verification required", key: "EMAIL_VERIFICATION_REQUIRED", value: "sometimes", want: "EMAIL_VERIFICATION_REQUIRED"},
 	}
 
 	for _, tt := range tests {

@@ -33,6 +33,17 @@ func newMemoryRepository() *memoryRepository {
 	}
 }
 
+func (r *memoryRepository) FindByEmail(_ context.Context, email string) (identity.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	user, exists := r.users[email]
+	if !exists {
+		return identity.User{}, identity.ErrUserNotFound
+	}
+	return user, nil
+}
+
 func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (identity.User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -66,8 +77,16 @@ func (prefixHasher) Hash(password string) (string, error) {
 
 type busyRegistrar struct{}
 
-func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.User, error) {
-	return identity.User{}, identity.ErrRegistrationBusy
+func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.RegisterUserResult, error) {
+	return identity.RegisterUserResult{}, identity.ErrRegistrationBusy
+}
+
+type failingVerificationIssuer struct {
+	err error
+}
+
+func (i failingVerificationIssuer) IssueForUser(context.Context, identity.User) error {
+	return i.err
 }
 
 type testServer struct {
@@ -78,9 +97,14 @@ type testServer struct {
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
+	return newTestServerWithIssuer(t, nil)
+}
+
+func newTestServerWithIssuer(t *testing.T, issuer identity.EmailVerificationIssuer) *testServer {
+	t.Helper()
 
 	repository := newMemoryRepository()
-	register := identity.NewRegisterUser(repository, prefixHasher{})
+	register := identity.NewRegisterUser(repository, prefixHasher{}, issuer)
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	handler := httpapi.New(register, logger)
@@ -208,6 +232,30 @@ func TestRegisterEndpointCreatesUserWithoutCredentials(t *testing.T) {
 	}
 	if got := server.repository.passwords["person@example.com"]; got != "hash:correct horse battery" {
 		t.Errorf("stored password = %q, want the hasher output", got)
+	}
+}
+
+func TestRegisterEndpointHidesVerificationDeliveryFailures(t *testing.T) {
+	issuer := failingVerificationIssuer{err: &identity.VerificationDeliveryError{Err: errors.New("smtp unavailable for 012345")}}
+	server := newTestServerWithIssuer(t, issuer)
+
+	status, _, body := post(t, server.url, `{"email":"person@example.com","password":"correct horse battery"}`, jsonHeaders())
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusCreated, body)
+	}
+	if strings.Contains(string(body), "012345") || strings.Contains(string(body), "smtp") {
+		t.Errorf("response exposed delivery internals: %s", body)
+	}
+	if !strings.Contains(server.logs.String(), "email verification dispatch failed") {
+		t.Errorf("logs do not record the delivery failure: %s", server.logs.String())
+	}
+	if strings.Contains(server.logs.String(), "012345") {
+		t.Errorf("logs exposed the verification code: %s", server.logs.String())
+	}
+
+	user := decodeUser(t, body)
+	if user.EmailVerified {
+		t.Error("user.emailVerified = true, want false when delivery fails")
 	}
 }
 

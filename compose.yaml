@@ -30,6 +30,8 @@ services:
       SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-10s}
       DB_CONNECT_TIMEOUT: ${DB_CONNECT_TIMEOUT:-5s}
       DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+      MAIL_OUTBOX_FILE: ${MAIL_OUTBOX_FILE:-/tmp/lds-user-service-mail/outbox.jsonl}
+      EMAIL_VERIFICATION_REQUIRED: ${EMAIL_VERIFICATION_REQUIRED:-true}
     ports:
       - "127.0.0.1:${HTTP_PORT:-8080}:8080"
     depends_on:
