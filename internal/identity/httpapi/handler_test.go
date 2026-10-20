@@ -33,6 +33,17 @@ func newMemoryRepository() *memoryRepository {
 	}
 }
 
+func (r *memoryRepository) FindByEmail(_ context.Context, email string) (identity.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	user, exists := r.users[email]
+	if !exists {
+		return identity.User{}, identity.ErrUserNotFound
+	}
+	return user, nil
+}
+
 func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (identity.User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -66,8 +77,26 @@ func (prefixHasher) Hash(password string) (string, error) {
 
 type busyRegistrar struct{}
 
-func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.User, error) {
-	return identity.User{}, identity.ErrRegistrationBusy
+func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.RegisterUserResult, error) {
+	return identity.RegisterUserResult{}, identity.ErrRegistrationBusy
+}
+
+type hashingBusyRegistrar struct{}
+
+func (hashingBusyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.RegisterUserResult, error) {
+	return identity.RegisterUserResult{}, identity.ErrHashingBusy
+}
+
+type failingVerificationIssuer struct {
+	err error
+}
+
+func (i failingVerificationIssuer) Prepare(context.Context) (identity.PreparedEmailVerification, error) {
+	return identity.PreparedEmailVerification{Code: "012345", CodeHash: "hash:012345"}, nil
+}
+
+func (i failingVerificationIssuer) Issue(context.Context, identity.User, identity.PreparedEmailVerification) error {
+	return i.err
 }
 
 type testServer struct {
@@ -78,9 +107,14 @@ type testServer struct {
 
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
+	return newTestServerWithIssuer(t, nil)
+}
+
+func newTestServerWithIssuer(t *testing.T, issuer identity.EmailVerificationIssuer) *testServer {
+	t.Helper()
 
 	repository := newMemoryRepository()
-	register := identity.NewRegisterUser(repository, prefixHasher{})
+	register := identity.NewRegisterUser(repository, prefixHasher{}, issuer)
 	logs := &bytes.Buffer{}
 	logger := slog.New(slog.NewTextHandler(logs, nil))
 	handler := httpapi.New(register, logger)
@@ -211,6 +245,30 @@ func TestRegisterEndpointCreatesUserWithoutCredentials(t *testing.T) {
 	}
 }
 
+func TestRegisterEndpointHidesVerificationDeliveryFailures(t *testing.T) {
+	issuer := failingVerificationIssuer{err: &identity.VerificationDeliveryError{Err: errors.New("smtp unavailable for 012345")}}
+	server := newTestServerWithIssuer(t, issuer)
+
+	status, _, body := post(t, server.url, `{"email":"person@example.com","password":"correct horse battery"}`, jsonHeaders())
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusCreated, body)
+	}
+	if strings.Contains(string(body), "012345") || strings.Contains(string(body), "smtp") {
+		t.Errorf("response exposed delivery internals: %s", body)
+	}
+	if !strings.Contains(server.logs.String(), "email verification dispatch failed") {
+		t.Errorf("logs do not record the delivery failure: %s", server.logs.String())
+	}
+	if strings.Contains(server.logs.String(), "012345") {
+		t.Errorf("logs exposed the verification code: %s", server.logs.String())
+	}
+
+	user := decodeUser(t, body)
+	if user.EmailVerified {
+		t.Error("user.emailVerified = true, want false when delivery fails")
+	}
+}
+
 func TestRegisterEndpointRejectsInvalidInput(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -322,6 +380,29 @@ func TestRegisterEndpointRejectsOversizedTrailingBody(t *testing.T) {
 func TestRegisterEndpointReturnsServiceUnavailableWhenCapacityIsExhausted(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := httpapi.New(busyRegistrar{}, logger)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	status, headers, body := post(t, server.URL, `{"email":"person@example.com","password":"correct horse battery"}`, jsonHeaders())
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusServiceUnavailable, body)
+	}
+	if retryAfter := headers.Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("Retry-After = %q, want 1", retryAfter)
+	}
+
+	response := decodeError(t, body)
+	if response.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Errorf("error.code = %q, want SERVICE_UNAVAILABLE", response.Error.Code)
+	}
+}
+
+func TestRegisterEndpointReturnsServiceUnavailableWhenHashingIsSaturated(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := httpapi.New(hashingBusyRegistrar{}, logger)
 
 	mux := http.NewServeMux()
 	handler.Register(mux)

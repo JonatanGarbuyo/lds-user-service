@@ -9,24 +9,28 @@ import (
 )
 
 const (
-	defaultAppEnv           = "development"
-	defaultHTTPAddr         = ":8080"
-	defaultLogLevel         = "info"
-	defaultShutdownTimeout  = 10 * time.Second
-	defaultDBConnectTimeout = 5 * time.Second
-	defaultDBMaxConns       = 10
-	postgresScheme          = "postgres"
-	postgresqlScheme        = "postgresql"
+	defaultAppEnv                    = "development"
+	defaultHTTPAddr                  = ":8080"
+	defaultLogLevel                  = "info"
+	defaultShutdownTimeout           = 10 * time.Second
+	defaultDBConnectTimeout          = 5 * time.Second
+	defaultDBMaxConns                = 10
+	defaultEmailVerificationRequired = true
+	defaultMailOutboxFile            = "/tmp/lds-user-service-mail/outbox.jsonl"
+	postgresScheme                   = "postgres"
+	postgresqlScheme                 = "postgresql"
 )
 
 type Config struct {
-	AppEnv           string
-	HTTPAddr         string
-	LogLevel         string
-	DatabaseURL      string
-	ShutdownTimeout  time.Duration
-	DBConnectTimeout time.Duration
-	DBMaxConns       int32
+	AppEnv                    string
+	HTTPAddr                  string
+	LogLevel                  string
+	DatabaseURL               string
+	ShutdownTimeout           time.Duration
+	DBConnectTimeout          time.Duration
+	DBMaxConns                int32
+	EmailVerificationRequired bool
+	MailOutboxFile            string
 }
 
 func Load() (Config, error) {
@@ -35,13 +39,15 @@ func Load() (Config, error) {
 
 func LoadFrom(getenv func(string) string) (Config, error) {
 	cfg := Config{
-		AppEnv:           valueOrDefault(getenv, "APP_ENV", defaultAppEnv),
-		HTTPAddr:         valueOrDefault(getenv, "HTTP_ADDR", defaultHTTPAddr),
-		LogLevel:         valueOrDefault(getenv, "LOG_LEVEL", defaultLogLevel),
-		DatabaseURL:      getenv("DATABASE_URL"),
-		ShutdownTimeout:  defaultShutdownTimeout,
-		DBConnectTimeout: defaultDBConnectTimeout,
-		DBMaxConns:       defaultDBMaxConns,
+		AppEnv:                    valueOrDefault(getenv, "APP_ENV", defaultAppEnv),
+		HTTPAddr:                  valueOrDefault(getenv, "HTTP_ADDR", defaultHTTPAddr),
+		LogLevel:                  valueOrDefault(getenv, "LOG_LEVEL", defaultLogLevel),
+		DatabaseURL:               getenv("DATABASE_URL"),
+		ShutdownTimeout:           defaultShutdownTimeout,
+		DBConnectTimeout:          defaultDBConnectTimeout,
+		DBMaxConns:                defaultDBMaxConns,
+		EmailVerificationRequired: defaultEmailVerificationRequired,
+		MailOutboxFile:            valueOrDefault(getenv, "MAIL_OUTBOX_FILE", defaultMailOutboxFile),
 	}
 
 	var err error
@@ -52,6 +58,9 @@ func LoadFrom(getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DBMaxConns, err = int32OrDefault(getenv, "DB_MAX_CONNS", defaultDBMaxConns); err != nil {
+		return Config{}, err
+	}
+	if cfg.EmailVerificationRequired, err = boolOrDefault(getenv, "EMAIL_VERIFICATION_REQUIRED", defaultEmailVerificationRequired); err != nil {
 		return Config{}, err
 	}
 
@@ -88,6 +97,9 @@ func validate(cfg Config) error {
 	if cfg.DBConnectTimeout <= 0 {
 		return fmt.Errorf("config: DB_CONNECT_TIMEOUT must be greater than zero")
 	}
+	if cfg.MailOutboxFile == "" {
+		return fmt.Errorf("config: MAIL_OUTBOX_FILE must not be empty")
+	}
 	return nil
 }
 
@@ -109,6 +121,18 @@ func durationOrDefault(getenv func(string) string, key string, fallback time.Dur
 	}
 	if parsed <= 0 {
 		return 0, fmt.Errorf("config: %s must be greater than zero", key)
+	}
+	return parsed, nil
+}
+
+func boolOrDefault(getenv func(string) string, key string, fallback bool) (bool, error) {
+	value := getenv(key)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("config: %s must be a boolean (true or false): %w", key, err)
 	}
 	return parsed, nil
 }

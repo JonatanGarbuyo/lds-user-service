@@ -31,6 +31,17 @@ func newMemoryRepository() *memoryRepository {
 	}
 }
 
+func (r *memoryRepository) FindByEmail(_ context.Context, email string) (identity.User, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	user, exists := r.users[email]
+	if !exists {
+		return identity.User{}, identity.ErrUserNotFound
+	}
+	return user, nil
+}
+
 func (r *memoryRepository) Create(_ context.Context, newUser identity.NewUser) (identity.User, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -96,15 +107,16 @@ func (h *stubHasher) Hash(password string) (string, error) {
 func TestRegisterUserCreatesActiveUnverifiedUser(t *testing.T) {
 	repository := newMemoryRepository()
 	hasher := &stubHasher{}
-	register := identity.NewRegisterUser(repository, hasher)
+	register := identity.NewRegisterUser(repository, hasher, nil)
 
-	user, err := register.Execute(context.Background(), identity.RegisterUserInput{
+	result, err := register.Execute(context.Background(), identity.RegisterUserInput{
 		Email:    "  Person@Example.COM ",
 		Password: "correct horse battery",
 	})
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
+	user := result.User
 
 	if user.ID == "" {
 		t.Error("user.ID is empty")
@@ -156,7 +168,7 @@ func TestRegisterUserValidatesInput(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			repository := newMemoryRepository()
-			register := identity.NewRegisterUser(repository, &stubHasher{})
+			register := identity.NewRegisterUser(repository, &stubHasher{}, nil)
 
 			_, err := register.Execute(context.Background(), identity.RegisterUserInput{
 				Email:    test.email,
@@ -181,7 +193,7 @@ func TestRegisterUserValidatesInput(t *testing.T) {
 }
 
 func TestRegisterUserAcceptsTwelveCharacterPassword(t *testing.T) {
-	register := identity.NewRegisterUser(newMemoryRepository(), &stubHasher{})
+	register := identity.NewRegisterUser(newMemoryRepository(), &stubHasher{}, nil)
 
 	if _, err := register.Execute(context.Background(), identity.RegisterUserInput{
 		Email:    "person@example.com",
@@ -192,7 +204,7 @@ func TestRegisterUserAcceptsTwelveCharacterPassword(t *testing.T) {
 }
 
 func TestRegisterUserRejectsDuplicateEmail(t *testing.T) {
-	register := identity.NewRegisterUser(newMemoryRepository(), &stubHasher{})
+	register := identity.NewRegisterUser(newMemoryRepository(), &stubHasher{}, nil)
 
 	if _, err := register.Execute(context.Background(), identity.RegisterUserInput{
 		Email:    "person@example.com",
@@ -213,7 +225,7 @@ func TestRegisterUserRejectsDuplicateEmail(t *testing.T) {
 func TestRegisterUserPropagatesHasherFailure(t *testing.T) {
 	repository := newMemoryRepository()
 	hasherErr := errors.New("hash failure")
-	register := identity.NewRegisterUser(repository, &stubHasher{err: hasherErr})
+	register := identity.NewRegisterUser(repository, &stubHasher{err: hasherErr}, nil)
 
 	_, err := register.Execute(context.Background(), identity.RegisterUserInput{
 		Email:    "person@example.com",
@@ -231,7 +243,7 @@ func TestRegisterUserPropagatesRepositoryFailure(t *testing.T) {
 	repositoryErr := errors.New("database unavailable")
 	repository := newMemoryRepository()
 	repository.createErr = repositoryErr
-	register := identity.NewRegisterUser(repository, &stubHasher{})
+	register := identity.NewRegisterUser(repository, &stubHasher{}, nil)
 
 	_, err := register.Execute(context.Background(), identity.RegisterUserInput{
 		Email:    "person@example.com",
@@ -245,7 +257,7 @@ func TestRegisterUserPropagatesRepositoryFailure(t *testing.T) {
 func TestRegisterUserRejectsWhenHashingCapacityIsFull(t *testing.T) {
 	repository := newMemoryRepository()
 	hasher := newBlockingHasher()
-	register := identity.NewRegisterUserWithLimit(repository, hasher, 1)
+	register := identity.NewRegisterUserWithLimit(repository, hasher, nil, 1)
 
 	firstDone := make(chan error, 1)
 	go func() {
@@ -291,5 +303,90 @@ func TestRegisterUserRejectsWhenHashingCapacityIsFull(t *testing.T) {
 	}
 	if calls := hasher.calls.Load(); calls != 2 {
 		t.Errorf("hash calls after capacity freed = %d, want 2", calls)
+	}
+}
+
+type recordingVerificationIssuer struct {
+	users      []identity.User
+	err        error
+	prepareErr error
+}
+
+func (i *recordingVerificationIssuer) Prepare(context.Context) (identity.PreparedEmailVerification, error) {
+	if i.prepareErr != nil {
+		return identity.PreparedEmailVerification{}, i.prepareErr
+	}
+	return identity.PreparedEmailVerification{Code: "012345", CodeHash: "hash:012345"}, nil
+}
+
+func (i *recordingVerificationIssuer) Issue(_ context.Context, user identity.User, _ identity.PreparedEmailVerification) error {
+	i.users = append(i.users, user)
+	return i.err
+}
+
+func TestRegisterUserIssuesEmailVerification(t *testing.T) {
+	repository := newMemoryRepository()
+	issuer := &recordingVerificationIssuer{}
+	register := identity.NewRegisterUser(repository, &stubHasher{}, issuer)
+
+	result, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "person@example.com",
+		Password: "correct horse battery",
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.VerificationDeliveryError != nil {
+		t.Errorf("VerificationDeliveryError = %v, want nil", result.VerificationDeliveryError)
+	}
+	if len(issuer.users) != 1 {
+		t.Fatalf("issued verifications = %d, want 1", len(issuer.users))
+	}
+	if issuer.users[0].ID != result.User.ID || issuer.users[0].Email != result.User.Email {
+		t.Errorf("issued user = %+v, want %+v", issuer.users[0], result.User)
+	}
+}
+
+func TestRegisterUserSucceedsWhenVerificationDeliveryFails(t *testing.T) {
+	repository := newMemoryRepository()
+	deliveryErr := errors.New("mail transport unavailable")
+	issuer := &recordingVerificationIssuer{err: deliveryErr}
+	register := identity.NewRegisterUser(repository, &stubHasher{}, issuer)
+
+	result, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "person@example.com",
+		Password: "correct horse battery",
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if result.User.ID == "" {
+		t.Error("user was not created")
+	}
+	if !errors.Is(result.VerificationDeliveryError, deliveryErr) {
+		t.Errorf("VerificationDeliveryError = %v, want %v", result.VerificationDeliveryError, deliveryErr)
+	}
+	if _, exists := repository.users["person@example.com"]; !exists {
+		t.Error("user was not persisted despite successful registration")
+	}
+}
+
+func TestRegisterUserReturnsHashingBusyWithoutPersistingUser(t *testing.T) {
+	repository := newMemoryRepository()
+	issuer := &recordingVerificationIssuer{prepareErr: identity.ErrHashingBusy}
+	register := identity.NewRegisterUser(repository, &stubHasher{}, issuer)
+
+	_, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "person@example.com",
+		Password: "correct horse battery",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Execute() error = %v, want ErrHashingBusy", err)
+	}
+	if len(repository.users) != 0 {
+		t.Errorf("persisted users = %d, want 0", len(repository.users))
+	}
+	if len(issuer.users) != 0 {
+		t.Errorf("issued verifications = %d, want 0", len(issuer.users))
 	}
 }

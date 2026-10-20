@@ -5,9 +5,13 @@ info:
   description: |
     Public HTTP contract for the LDS User Service.
 
-    Version 1 currently covers basic User registration. Email verification, login,
-    sessions and administrative operations are outside this contract until their
-    respective tickets are implemented.
+    Version 1 currently covers User registration and Email Verification. Login,
+    sessions, password recovery, email change and administrative operations are
+    outside this contract until their respective tickets are implemented.
+
+    Registration and Email Verification never create a cookie, Bearer credential
+    or session. Verification codes are six digits, single-use, valid for ten
+    minutes, limited to five attempts and subject to a 60-second resend cooldown.
 
     Errors use a stable envelope with `error.code`, `error.message`,
     `error.requestId` and optional per-field messages in `error.fields`.
@@ -17,6 +21,8 @@ servers:
 tags:
   - name: Identity
     description: User identity lifecycle.
+  - name: Email Verification
+    description: Prove control of an email address without creating a session.
 paths:
   /v1/users:
     post:
@@ -191,6 +197,295 @@ paths:
                       code: SERVICE_UNAVAILABLE
                       message: Registration is temporarily unavailable.
                       requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+  /v1/auth/email-verification/request:
+    post:
+      tags:
+        - Email Verification
+      operationId: requestEmailVerification
+      summary: Request or resend an Email Verification code
+      description: |
+        Accepts a syntactically valid email and returns a generic `202 Accepted`
+        response that is identical whether or not an account exists.
+
+        For an existing unverified User, a new six-digit code is generated, the
+        previous active code is invalidated, and an email is dispatched through
+        the configured adapter. If the previous code was issued less than 60
+        seconds ago, the request is accepted but no new code is sent. Verified
+        accounts do not receive a new code.
+
+        A `202` response means the request was accepted; it never asserts that an
+        email was delivered. Delivery failures are logged without secrets and do
+        not reveal account existence. Requests are limited to 10 per minute per
+        client IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationRequest'
+            examples:
+              default:
+                summary: Request a verification code
+                value:
+                  email: person@example.com
+      responses:
+        '202':
+          description: Request accepted without revealing account existence or confirming delivery.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AcceptedResponse'
+              examples:
+                accepted:
+                  value:
+                    status: accepted
+        '400':
+          description: Malformed JSON or an invalid email address.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                validation:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request contains invalid fields.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                      fields:
+                        email: must be a valid email address
+        '413':
+          description: Request body exceeds the 1 MiB limit.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is not application/json.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 10 verification requests per minute from this client IP.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                rateLimited:
+                  value:
+                    error:
+                      code: RATE_LIMITED
+                      message: Too many requests. Try again later.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Hashing capacity is exhausted. Retry the request later.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Email verification is temporarily unavailable.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '500':
+          description: Unexpected server failure. No internal details are exposed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /v1/auth/email-verification/confirm:
+    post:
+      tags:
+        - Email Verification
+      operationId: confirmEmailVerification
+      summary: Confirm an Email Verification code
+      description: |
+        Confirms control of the email and sets `emailVerified=true`. The account
+        `status` is not changed and no cookie, Bearer credential or session is
+        created.
+
+        Codes are single-use, valid for ten minutes and limited to five failed
+        attempts. Expired, consumed, invalidated and exhausted codes all produce
+        the same generic `INVALID_VERIFICATION_CODE` error so the endpoint does
+        not reveal whether an account exists. Confirmation attempts are limited to
+        20 per minute per client IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EmailVerificationConfirmRequest'
+            examples:
+              default:
+                value:
+                  email: person@example.com
+                  code: '012345'
+      responses:
+        '200':
+          description: Email verified. No credentials or session are issued.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                verified:
+                  value:
+                    id: 0f8fad5b-d9cb-469f-a165-70867728950e
+                    email: person@example.com
+                    emailVerified: true
+                    status: active
+                    createdAt: '2026-10-19T12:00:00Z'
+                    updatedAt: '2026-10-19T12:03:00Z'
+        '400':
+          description: Invalid fields or an invalid, expired, consumed or exhausted code.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalidCode:
+                  value:
+                    error:
+                      code: INVALID_VERIFICATION_CODE
+                      message: The verification code is invalid or has expired.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                validation:
+                  value:
+                    error:
+                      code: VALIDATION_ERROR
+                      message: The request contains invalid fields.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+                      fields:
+                        code: must be exactly 6 digits
+        '413':
+          description: Request body exceeds the 1 MiB limit.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Content-Type is not application/json.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: More than 20 confirmation attempts per minute from this client IP.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                rateLimited:
+                  value:
+                    error:
+                      code: RATE_LIMITED
+                      message: Too many requests. Try again later.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '503':
+          description: Hashing capacity is exhausted. No verification attempt is consumed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+            Retry-After:
+              $ref: '#/components/headers/RetryAfter'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                busy:
+                  value:
+                    error:
+                      code: SERVICE_UNAVAILABLE
+                      message: Email verification is temporarily unavailable.
+                      requestId: 5be2b4bb9d5d4f4fa2d3ac5f8b4cd6f1
+        '500':
+          description: Unexpected server failure. No internal details are exposed.
+          headers:
+            X-Request-Id:
+              $ref: '#/components/headers/XRequestId'
+            Cache-Control:
+              $ref: '#/components/headers/CacheControl'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 components:
   headers:
     XRequestId:
@@ -204,10 +499,10 @@ components:
         type: string
         const: no-store
     RetryAfter:
-      description: Seconds to wait before retrying registration.
+      description: Seconds to wait before retrying a rate-limited request.
       schema:
         type: string
-        example: '1'
+        example: '30'
   schemas:
     RegisterUserRequest:
       type: object
@@ -253,7 +548,7 @@ components:
           example: person@example.com
         emailVerified:
           type: boolean
-          description: Whether the User has proven control of the email. Always false until Email Verification is implemented.
+          description: Whether the User has proven control of the email. It is set by Email Verification and is independent from the account status.
           example: false
         status:
           type: string
@@ -273,6 +568,49 @@ components:
           format: date-time
           description: Last update timestamp in RFC 3339 UTC.
           example: '2026-10-19T12:00:00Z'
+    EmailVerificationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email address. Surrounding whitespace is ignored and the value is normalized to lowercase.
+          example: person@example.com
+    EmailVerificationConfirmRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - code
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 254
+          description: Email address. Surrounding whitespace is ignored and the value is normalized to lowercase.
+          example: person@example.com
+        code:
+          type: string
+          pattern: '^[0-9]{6}$'
+          minLength: 6
+          maxLength: 6
+          description: Six-digit verification code. It is single-use and expires after ten minutes.
+          example: '012345'
+    AcceptedResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          const: accepted
+          description: The request was accepted. This does not confirm email delivery.
+          example: accepted
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -298,6 +636,8 @@ components:
             - UNSUPPORTED_MEDIA_TYPE
             - PAYLOAD_TOO_LARGE
             - SERVICE_UNAVAILABLE
+            - INVALID_VERIFICATION_CODE
+            - RATE_LIMITED
             - INTERNAL_ERROR
           example: VALIDATION_ERROR
         message:

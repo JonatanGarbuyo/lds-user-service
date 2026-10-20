@@ -17,6 +17,10 @@ const (
 		INSERT INTO users (email, password_hash)
 		VALUES ($1, $2)
 		RETURNING id::text, email, email_verified, status, created_at, updated_at`
+	findUserByEmailQuery = `
+		SELECT id::text, email, email_verified, status, created_at, updated_at
+		FROM users
+		WHERE email = $1`
 	uniqueViolationCode   = "23505"
 	emailUniqueConstraint = "users_email_key"
 )
@@ -37,6 +41,17 @@ func (r *Repository) Create(ctx context.Context, newUser identity.NewUser) (iden
 			return identity.User{}, identity.ErrEmailAlreadyExists
 		}
 		return identity.User{}, fmt.Errorf("insert user: %w", err)
+	}
+	return user, nil
+}
+
+func (r *Repository) FindByEmail(ctx context.Context, email string) (identity.User, error) {
+	user, err := scanUser(r.pool.QueryRow(ctx, findUserByEmailQuery, email))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return identity.User{}, identity.ErrUserNotFound
+		}
+		return identity.User{}, fmt.Errorf("find user by email: %w", err)
 	}
 	return user, nil
 }
@@ -68,5 +83,3 @@ func isEmailUniqueViolation(err error) bool {
 		pgErr.Code == uniqueViolationCode &&
 		pgErr.ConstraintName == emailUniqueConstraint
 }
-
-var _ identity.UserRepository = (*Repository)(nil)

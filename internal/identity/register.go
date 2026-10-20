@@ -5,38 +5,58 @@ import (
 	"fmt"
 )
 
-const defaultMaxConcurrentHashes = 2
+const DefaultMaxConcurrentHashes = 2
 
 type RegisterUser struct {
-	users     UserRepository
-	hasher    PasswordHasher
-	hashSlots chan struct{}
+	users        UserRepository
+	hasher       PasswordHasher
+	verification EmailVerificationIssuer
+	hashLimiter  HashLimiter
 }
 
-func NewRegisterUser(users UserRepository, hasher PasswordHasher) *RegisterUser {
-	return NewRegisterUserWithLimit(users, hasher, defaultMaxConcurrentHashes)
+type RegisterUserResult struct {
+	User                      User
+	VerificationDeliveryError error
 }
 
-func NewRegisterUserWithLimit(users UserRepository, hasher PasswordHasher, maxConcurrentHashes int) *RegisterUser {
-	if maxConcurrentHashes < 1 {
-		maxConcurrentHashes = 1
+func NewRegisterUser(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer) *RegisterUser {
+	return NewRegisterUserWithLimiter(users, hasher, verification, NewHashLimiter(DefaultMaxConcurrentHashes))
+}
+
+func NewRegisterUserWithLimit(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer, maxConcurrentHashes int) *RegisterUser {
+	return NewRegisterUserWithLimiter(users, hasher, verification, NewHashLimiter(maxConcurrentHashes))
+}
+
+func NewRegisterUserWithLimiter(users UserRepository, hasher PasswordHasher, verification EmailVerificationIssuer, limiter HashLimiter) *RegisterUser {
+	if limiter == nil {
+		limiter = NewHashLimiter(DefaultMaxConcurrentHashes)
 	}
 	return &RegisterUser{
-		users:     users,
-		hasher:    hasher,
-		hashSlots: make(chan struct{}, maxConcurrentHashes),
+		users:        users,
+		hasher:       hasher,
+		verification: verification,
+		hashLimiter:  limiter,
 	}
 }
 
-func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (User, error) {
+func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (RegisterUserResult, error) {
 	email := NormalizeEmail(input.Email)
 	if err := validateRegistration(email, input.Password); err != nil {
-		return User{}, err
+		return RegisterUserResult{}, err
 	}
 
 	passwordHash, err := r.hashPassword(input.Password)
 	if err != nil {
-		return User{}, err
+		return RegisterUserResult{}, err
+	}
+
+	var prepared *PreparedEmailVerification
+	if r.verification != nil {
+		value, err := r.verification.Prepare(ctx)
+		if err != nil {
+			return RegisterUserResult{}, err
+		}
+		prepared = &value
 	}
 
 	user, err := r.users.Create(ctx, NewUser{
@@ -44,18 +64,21 @@ func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (Us
 		PasswordHash: passwordHash,
 	})
 	if err != nil {
-		return User{}, fmt.Errorf("create user: %w", err)
+		return RegisterUserResult{}, fmt.Errorf("create user: %w", err)
 	}
-	return user, nil
+
+	result := RegisterUserResult{User: user}
+	if prepared != nil {
+		result.VerificationDeliveryError = r.verification.Issue(ctx, user, *prepared)
+	}
+	return result, nil
 }
 
 func (r *RegisterUser) hashPassword(password string) (string, error) {
-	select {
-	case r.hashSlots <- struct{}{}:
-	default:
+	if !r.hashLimiter.TryAcquire() {
 		return "", ErrRegistrationBusy
 	}
-	defer func() { <-r.hashSlots }()
+	defer r.hashLimiter.Release()
 
 	passwordHash, err := r.hasher.Hash(password)
 	if err != nil {

@@ -18,6 +18,14 @@ _Avoid_: User con rol de admin.
 **Email Verification**:
 Comprobación de que una persona controla la dirección de email asociada a su identidad. Es independiente de haber iniciado sesión.
 
+**Verification Challenge**:
+Intento acotado de comprobar el control de un email. Tiene un código de un solo uso, vencimiento, límite de intentos y estado activo, consumido o invalidado.
+_Avoid_: Token, sesión.
+
+**Verification Code**:
+Secreto numérico de seis dígitos entregado por correo dentro de un Verification Challenge. No es una credencial de sesión.
+_Avoid_: OTP en documentación de dominio, token.
+
 **Pending Email Change**:
 Solicitud de sustitución de la dirección de email de un User; la dirección actual se mantiene hasta que se confirme el control de la nueva.
 

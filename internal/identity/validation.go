@@ -38,6 +38,28 @@ func validateRegistration(email, password string) error {
 	return nil
 }
 
+func validateEmailOnly(email string) error {
+	if email == "" {
+		return &ValidationError{Fields: map[string]string{"email": "is required"}}
+	}
+	if message := validateEmail(email); message != "" {
+		return &ValidationError{Fields: map[string]string{"email": message}}
+	}
+	return nil
+}
+
+func validateVerificationCode(code string) error {
+	if len(code) != verificationCodeDigits {
+		return &ValidationError{Fields: map[string]string{"code": "must be exactly 6 digits"}}
+	}
+	for _, character := range code {
+		if character < '0' || character > '9' {
+			return &ValidationError{Fields: map[string]string{"code": "must be exactly 6 digits"}}
+		}
+	}
+	return nil
+}
+
 func validateEmail(email string) string {
 	if len(email) > maxEmailLength {
 		return "must be at most 254 characters"
