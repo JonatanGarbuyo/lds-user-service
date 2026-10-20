@@ -81,11 +81,21 @@ func (busyRegistrar) Execute(context.Context, identity.RegisterUserInput) (ident
 	return identity.RegisterUserResult{}, identity.ErrRegistrationBusy
 }
 
+type hashingBusyRegistrar struct{}
+
+func (hashingBusyRegistrar) Execute(context.Context, identity.RegisterUserInput) (identity.RegisterUserResult, error) {
+	return identity.RegisterUserResult{}, identity.ErrHashingBusy
+}
+
 type failingVerificationIssuer struct {
 	err error
 }
 
-func (i failingVerificationIssuer) IssueForUser(context.Context, identity.User) error {
+func (i failingVerificationIssuer) Prepare(context.Context) (identity.PreparedEmailVerification, error) {
+	return identity.PreparedEmailVerification{Code: "012345", CodeHash: "hash:012345"}, nil
+}
+
+func (i failingVerificationIssuer) Issue(context.Context, identity.User, identity.PreparedEmailVerification) error {
 	return i.err
 }
 
@@ -370,6 +380,29 @@ func TestRegisterEndpointRejectsOversizedTrailingBody(t *testing.T) {
 func TestRegisterEndpointReturnsServiceUnavailableWhenCapacityIsExhausted(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handler := httpapi.New(busyRegistrar{}, logger)
+
+	mux := http.NewServeMux()
+	handler.Register(mux)
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	status, headers, body := post(t, server.URL, `{"email":"person@example.com","password":"correct horse battery"}`, jsonHeaders())
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d; body = %s", status, http.StatusServiceUnavailable, body)
+	}
+	if retryAfter := headers.Get("Retry-After"); retryAfter != "1" {
+		t.Errorf("Retry-After = %q, want 1", retryAfter)
+	}
+
+	response := decodeError(t, body)
+	if response.Error.Code != "SERVICE_UNAVAILABLE" {
+		t.Errorf("error.code = %q, want SERVICE_UNAVAILABLE", response.Error.Code)
+	}
+}
+
+func TestRegisterEndpointReturnsServiceUnavailableWhenHashingIsSaturated(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := httpapi.New(hashingBusyRegistrar{}, logger)
 
 	mux := http.NewServeMux()
 	handler.Register(mux)

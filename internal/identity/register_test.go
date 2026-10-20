@@ -307,11 +307,19 @@ func TestRegisterUserRejectsWhenHashingCapacityIsFull(t *testing.T) {
 }
 
 type recordingVerificationIssuer struct {
-	users []identity.User
-	err   error
+	users      []identity.User
+	err        error
+	prepareErr error
 }
 
-func (i *recordingVerificationIssuer) IssueForUser(_ context.Context, user identity.User) error {
+func (i *recordingVerificationIssuer) Prepare(context.Context) (identity.PreparedEmailVerification, error) {
+	if i.prepareErr != nil {
+		return identity.PreparedEmailVerification{}, i.prepareErr
+	}
+	return identity.PreparedEmailVerification{Code: "012345", CodeHash: "hash:012345"}, nil
+}
+
+func (i *recordingVerificationIssuer) Issue(_ context.Context, user identity.User, _ identity.PreparedEmailVerification) error {
 	i.users = append(i.users, user)
 	return i.err
 }
@@ -360,5 +368,25 @@ func TestRegisterUserSucceedsWhenVerificationDeliveryFails(t *testing.T) {
 	}
 	if _, exists := repository.users["person@example.com"]; !exists {
 		t.Error("user was not persisted despite successful registration")
+	}
+}
+
+func TestRegisterUserReturnsHashingBusyWithoutPersistingUser(t *testing.T) {
+	repository := newMemoryRepository()
+	issuer := &recordingVerificationIssuer{prepareErr: identity.ErrHashingBusy}
+	register := identity.NewRegisterUser(repository, &stubHasher{}, issuer)
+
+	_, err := register.Execute(context.Background(), identity.RegisterUserInput{
+		Email:    "person@example.com",
+		Password: "correct horse battery",
+	})
+	if !errors.Is(err, identity.ErrHashingBusy) {
+		t.Fatalf("Execute() error = %v, want ErrHashingBusy", err)
+	}
+	if len(repository.users) != 0 {
+		t.Errorf("persisted users = %d, want 0", len(repository.users))
+	}
+	if len(issuer.users) != 0 {
+		t.Errorf("issued verifications = %d, want 0", len(issuer.users))
 	}
 }

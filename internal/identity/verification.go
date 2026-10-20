@@ -28,8 +28,14 @@ func DefaultEmailVerificationPolicy() EmailVerificationPolicy {
 	}
 }
 
+type PreparedEmailVerification struct {
+	Code     string
+	CodeHash string
+}
+
 type EmailVerificationIssuer interface {
-	IssueForUser(ctx context.Context, user User) error
+	Prepare(ctx context.Context) (PreparedEmailVerification, error)
+	Issue(ctx context.Context, user User, prepared PreparedEmailVerification) error
 }
 
 type EmailVerificationDependencies struct {
@@ -97,22 +103,36 @@ type ConfirmEmailVerificationInput struct {
 	ClientIP string
 }
 
+func (s *EmailVerificationService) Prepare(ctx context.Context) (PreparedEmailVerification, error) {
+	code, err := s.codeGenerator.Generate()
+	if err != nil {
+		return PreparedEmailVerification{}, err
+	}
+
+	codeHash, err := s.hashCode(code)
+	if err != nil {
+		return PreparedEmailVerification{}, err
+	}
+	return PreparedEmailVerification{Code: code, CodeHash: codeHash}, nil
+}
+
+func (s *EmailVerificationService) Issue(ctx context.Context, user User, prepared PreparedEmailVerification) error {
+	if user.EmailVerified {
+		return nil
+	}
+	return s.createChallengeAndSend(ctx, user, prepared.Code, prepared.CodeHash)
+}
+
 func (s *EmailVerificationService) IssueForUser(ctx context.Context, user User) error {
 	if user.EmailVerified {
 		return nil
 	}
 
-	code, err := s.codeGenerator.Generate()
+	prepared, err := s.Prepare(ctx)
 	if err != nil {
 		return err
 	}
-
-	codeHash, err := s.hashCode(code)
-	if err != nil {
-		return err
-	}
-
-	return s.createChallengeAndSend(ctx, user, code, codeHash)
+	return s.Issue(ctx, user, prepared)
 }
 
 func (s *EmailVerificationService) Request(ctx context.Context, input RequestEmailVerificationInput) error {
@@ -124,11 +144,7 @@ func (s *EmailVerificationService) Request(ctx context.Context, input RequestEma
 		return err
 	}
 
-	code, err := s.codeGenerator.Generate()
-	if err != nil {
-		return err
-	}
-	codeHash, err := s.hashCode(code)
+	prepared, err := s.Prepare(ctx)
 	if err != nil {
 		return err
 	}
@@ -144,7 +160,7 @@ func (s *EmailVerificationService) Request(ctx context.Context, input RequestEma
 		return nil
 	}
 
-	err = s.createChallengeAndSend(ctx, user, code, codeHash)
+	err = s.Issue(ctx, user, prepared)
 	if errors.Is(err, ErrResendTooSoon) || errors.Is(err, ErrEmailAlreadyVerified) {
 		return nil
 	}

@@ -50,6 +50,15 @@ func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (Re
 		return RegisterUserResult{}, err
 	}
 
+	var prepared *PreparedEmailVerification
+	if r.verification != nil {
+		value, err := r.verification.Prepare(ctx)
+		if err != nil {
+			return RegisterUserResult{}, err
+		}
+		prepared = &value
+	}
+
 	user, err := r.users.Create(ctx, NewUser{
 		Email:        email,
 		PasswordHash: passwordHash,
@@ -59,8 +68,8 @@ func (r *RegisterUser) Execute(ctx context.Context, input RegisterUserInput) (Re
 	}
 
 	result := RegisterUserResult{User: user}
-	if r.verification != nil {
-		result.VerificationDeliveryError = r.verification.IssueForUser(ctx, user)
+	if prepared != nil {
+		result.VerificationDeliveryError = r.verification.Issue(ctx, user, *prepared)
 	}
 	return result, nil
 }

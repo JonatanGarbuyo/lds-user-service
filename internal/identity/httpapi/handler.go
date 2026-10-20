@@ -69,7 +69,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			code:    "EMAIL_ALREADY_EXISTS",
 			message: "An account with this email already exists.",
 		})
-	case errors.Is(err, identity.ErrRegistrationBusy):
+	case errors.Is(err, identity.ErrRegistrationBusy), errors.Is(err, identity.ErrHashingBusy):
 		writeServiceUnavailable(w, requestID, "Registration is temporarily unavailable.")
 	default:
 		var validationErr *identity.ValidationError

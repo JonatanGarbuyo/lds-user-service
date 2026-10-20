@@ -73,7 +73,7 @@ Reglas relevantes:
 
 ## Email Verification
 
-Al registrarse, el servicio genera un código numérico de **6 dígitos**, lo persiste como hash Argon2id (sujeto al límite compartido de hashing descrito arriba) y lo envía por el puerto `identity.VerificationEmailSender`. El código tiene **10 minutos** de vigencia, es de **un solo uso**, admite **5 intentos** fallidos y no se expone en respuestas HTTP ni en logs. Un código nuevo invalida el anterior.
+Al registrarse, el servicio genera un código numérico de **6 dígitos**, lo persiste como hash Argon2id (sujeto al límite compartido de hashing descrito arriba) y lo envía por el puerto `identity.VerificationEmailSender`. El código tiene **10 minutos** de vigencia, es de **un solo uso**, admite **5 intentos** fallidos y no se expone en respuestas HTTP ni en logs. Un código nuevo invalida el anterior. La generación y el hash del código se preparan antes de persistir el User; si el límite de hashing está saturado, el registro responde `503` y no crea la cuenta, de modo que el reintento no encuentra un `409` inesperado.
 
 El contrato completo está en [`api/openapi.yaml`](api/openapi.yaml). Las operaciones son:
 
