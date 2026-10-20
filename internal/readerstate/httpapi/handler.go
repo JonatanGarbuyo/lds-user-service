@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -26,6 +27,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	setRequestID(w, r)
 	body, err := json.Marshal(h.keys.JWKS())
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -44,4 +46,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func setRequestID(w http.ResponseWriter, r *http.Request) {
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" || len(requestID) > 128 {
+		var buffer [16]byte
+		if _, err := rand.Read(buffer[:]); err == nil {
+			requestID = hex.EncodeToString(buffer[:])
+		} else {
+			requestID = "unknown"
+		}
+	}
+	w.Header().Set("X-Request-Id", requestID)
 }

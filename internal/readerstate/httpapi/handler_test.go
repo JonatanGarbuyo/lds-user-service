@@ -46,6 +46,9 @@ func TestJWKSEndpointIsPublicCacheableAndExposesOnlyPublicKeys(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
+	if recorder.Header().Get("X-Request-Id") == "" {
+		t.Error("X-Request-Id is empty")
+	}
 	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
 		t.Errorf("Content-Type = %q", got)
 	}
@@ -79,6 +82,9 @@ func TestJWKSEndpointIsPublicCacheableAndExposesOnlyPublicKeys(t *testing.T) {
 	handler.ServeHTTP(conditionalRecorder, conditional)
 	if conditionalRecorder.Code != http.StatusNotModified {
 		t.Errorf("conditional status = %d, want 304", conditionalRecorder.Code)
+	}
+	if conditionalRecorder.Header().Get("X-Request-Id") == "" {
+		t.Error("conditional X-Request-Id is empty")
 	}
 }
 
